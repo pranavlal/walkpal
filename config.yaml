@@ -1,0 +1,79 @@
+# WalkingPal Configuration
+
+# Camera Settings
+camera:
+  fps: 15.0
+  camera_height: 1.5      # Meters. Used for software tilt estimation logic.
+  disable_imu: false      # Set to true to force software-only tilt fallback.
+  # Extended features
+  lr_check: false
+  extended_disparity: false
+  subpixel: false
+
+# Navigation / Depth thresholds
+navigation:
+  obstacle_m: 1.2         # Warning distance for general obstacles
+  clear_m: 2.0           # "Clear ahead" distance
+  dropoff_m: 3.5         # Max distance for floor. > this = dropoff.
+  dropoff_invalid_ratio: 0.75 # Ratio of invalid pixels to trigger dropoff
+  
+  # Environment adaptation
+  min_valid_normal: 0.20
+  min_valid_dim: 0.30
+  dropoff_invalid_boost_dim: 0.10
+
+# Jitter Reduction (Debouncing)
+smoothing:
+  confirm_frames: 5
+  clear_frames: 2
+  dir_window: 5
+  hazard_on: 2
+  hazard_off: 3
+  hazard_cooldown_s: 2.0
+  pothole_cooldown_s: 2.0
+
+# Features toggle
+features:
+  enable_yolo: false
+  enable_ocr: false
+  enable_potholes: false
+  
+# YOLO Settings
+yolo:
+  fps: 4.0
+  confindence: 0.50
+  hazards: "dog,cat,cow,person"
+
+# OCR Settings
+ocr:
+  engine: "auto"     # tesseract, easyocr, auto
+  lang: "eng"
+  fps: 1.25
+  every_s: 5.0
+  min_len: 7
+  width: 1280
+  height: 720
+  cooldown_s: 7.0
+  auto_min_quality: 0.55
+  easyocr_gpu: false
+
+# Audio / Feedback
+audio:
+  volume: 1.0           # Master volume 0.0-1.0
+  tts_rate: 175
+  tts_off: false
+  speak_every_s: 1.1
+  language: "en"        # en, hi
+  spatial_audio: false
+  spatial_only: false
+  spatial_volume: 0.7
+
+# System
+system:
+  max_retries: 5
+  watchdog_s: 5.0
+  log_file: "walkingpal.log"
+  debug: false
+  monitor: false
+  self_test: true
+

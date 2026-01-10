@@ -1,0 +1,7 @@
+Collecting pygame
+  Downloading pygame-2.6.1-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (12 kB)
+Downloading pygame-2.6.1-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (14.0 MB)
+   ━━━━ 14.… 17.7  0:00…
+        MB   MB/s       
+Installing collected packages: pygame
+Successfully installed pygame-2.6.1

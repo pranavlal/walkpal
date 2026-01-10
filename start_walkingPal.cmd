@@ -1,0 +1,1 @@
+python walkingPal.py --enable_yolo --enable_potholes --enable_ocr --ocr_engine auto --ocr_lang eng+hin

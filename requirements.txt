@@ -1,0 +1,17 @@
+# Core Dependencies (Vision & Navigation)
+numpy>=1.21.0
+opencv-python>=4.5.0
+depthai>=3.2.1
+
+# Text-to-Speech (Navigation feedback)
+pyttsx3>=2.90
+
+# Spatial Audio (Positional warnings)
+pygame>=2.5.0
+
+# OCR Dependencies (Optional but recommended)
+# Tesseract (requires system-wide tesseract-ocr)
+pytesseract>=0.3.10
+# EasyOCR (Deep learning based, heavier dependency)
+easyocr>=1.7.0
+PyYAML>=6.0.0

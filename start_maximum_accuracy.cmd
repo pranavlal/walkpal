@@ -1,0 +1,20 @@
+python walkingPal.py
+  --fps 20 \
+  --confidence 230 \
+  --lr_check \
+  --subpixel \
+  --enable_yolo \
+  --yolo_fps 6 \
+  --yolo_conf 0.55 \
+  --enable_potholes \
+  --pothole_score 0.50 \
+  --enable_ocr \
+  --ocr_engine auto \
+  --ocr_lang eng+hin \
+  --ocr_width 1920 \
+  --ocr_height 1080 \
+  --ocr_fps 1.0 \
+  --ocr_every_s 4 \
+  --ocr_auto_min_quality 0.45 \
+  --confirm_frames 4 \
+  --clear_frames 3
