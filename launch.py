@@ -18,8 +18,8 @@ LAUNCH_ARGS = [
     "--ocr_engine", "auto",
     "--ocr_lang", "eng+hin",
     "--ocr_fps", "1.25",
-    # Scene Description is always enabled via .env key presence, 
-    # but we can ensure standard thresholds are passed if needed.
+    "--record",      # Enable SessionLogger (JSONL + Images)
+    "--record_fps", "2.0",
 ]
 
 def main():
@@ -68,10 +68,10 @@ def main():
 
     # Pass through any extra arguments provided to this script
     # e.g. python launch.py --debug
-    save_log = False
+    save_log = True # Default to True now
     args = sys.argv[1:]
     if "--save_log" in args:
-        save_log = True
+        # It's already True by default, but remove it so it doesn't get passed to walkingPal
         args.remove("--save_log")
     
     if args:
