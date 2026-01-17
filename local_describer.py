@@ -21,45 +21,54 @@ class LocalDescriber:
         self.tokenizer = None
         self.lock = threading.Lock()
         self.loaded = False
+        self.loading_started = False
         
         logger.info(f"LocalDescriber initialized. Device: {self.device} (Model not loaded yet)")
 
     def ensure_loaded(self):
-        """Lazy load the model to avoid startup delay if not enabled."""
+        """Lazy load the model in background to avoid blocking main thread."""
         if self.loaded:
             return
 
         with self.lock:
-            if self.loaded:
+            # Check again
+            if self.loaded or self.loading_started:
                 return
             
-            try:
-                logger.info(f"Loading local VLM: {self.model_id}...")
-                start = time.time()
-                
-                # Moondream requires trust_remote_code=True
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    self.model_id, 
-                    trust_remote_code=True,
-                    revision="2024-08-26" # Pin revision for stability if needed, or use main
-                ).to(self.device)
-                
-                self.tokenizer = AutoTokenizer.from_pretrained(self.model_id, revision="2024-08-26")
-                
-                self.model.eval()
-                self.loaded = True
-                logger.info(f"Local VLM loaded in {time.time() - start:.1f}s")
-            except Exception as e:
-                logger.error(f"Failed to load Local VLM: {e}")
-                raise e
+            self.loading_started = True
+            threading.Thread(target=self._load_worker, daemon=True).start()
+            logger.info("Background loading of Local VLM started...")
+
+    def _load_worker(self):
+        try:
+            logger.info(f"Loading local VLM: {self.model_id}...")
+            start = time.time()
+            
+            # Moondream requires trust_remote_code=True
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_id, 
+                trust_remote_code=True,
+                revision="2024-08-26" 
+            ).to(self.device)
+            
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_id, revision="2024-08-26")
+            
+            self.model.eval()
+            self.loaded = True
+            logger.info(f"Local VLM loaded in {time.time() - start:.1f}s")
+        except Exception as e:
+            logger.error(f"Failed to load Local VLM: {e}")
+            self.loading_started = False # Allow retry
 
     def analyze_image(self, frame_bgr: np.ndarray, prompt: str = "Describe the single main object in front of the camera in 2-4 words.") -> str:
         """
         Run inference on a BGR OpenCV frame.
         """
-        try:
+        if not self.loaded:
             self.ensure_loaded()
-            
+            return None # Fallback to next tier while loading
+
+        try:
             # Convert BGR -> RGB -> PIL
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
             image = Image.fromarray(frame_rgb)
