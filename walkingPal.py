@@ -1340,6 +1340,7 @@ def main():
             last_monitor_ts = 0.0
             last_log_ts = 0.0
             last_nav_state = None # For smart audio filter
+            last_label_state = None
             
             # Reset OCR future on reconnection
             ocr_future = None
@@ -1751,17 +1752,36 @@ def main():
                     is_hazard = (dropoff or stairs or pothole)
                     
                     # Create a state signature to detect meaningful changes
-                    current_nav_state = (blocked, nav_msg, is_hazard)
+                    # FIX: Do NOT include 'final' or 'nav_msg' directly if they contain jittery distance ("1.5m" vs "1.6m")
+                    # Instead, track the semantic state: Safe/Blocked zones and Hazards.
+                    # We also verify 'uncertain' to avoid flickering between Clear/Uncertain.
                     
+                    # (Blocked_L, Blocked_C, Blocked_R, Hazard_Type, Uncertain)
+                    current_nav_state = (
+                        is_blocked_L, is_blocked_C, is_blocked_R, 
+                        last_stairs_label if stairs else None,
+                        dropoff, pothole, uncertain
+                    )
+                    
+                    # Also check if the named object changed (e.g. Chair -> Person)
+                    current_label_state = final_label if blocked else None
+
                     if is_hazard:
-                         # Hazards trigger immediate speech (debounced by specific hazard logic if needed)
+                         # Hazards always speak (debounced by db)
                          should_speak = True
                     elif current_nav_state != last_nav_state:
-                         # State Changed (e.g. Cleared -> Blocked, or Blocked -> Cleared)
+                         # Structural change (e.g. L->Blocked)
+                         should_speak = True
+                    elif current_label_state != last_label_state:
+                         # Label changed (Unknown -> Chair)
                          should_speak = True
                     
+                    # If state is identical, we MIGHT still want to speak if distance changed drastically?
+                    # For now, silence is golden. "Sighted Guide" only speaks on change.
+
                     # Update State
                     last_nav_state = current_nav_state
+                    last_label_state = current_label_state
 
                     if final and should_speak:
                          # Check if we just spoke this exact message very recently (double check)
