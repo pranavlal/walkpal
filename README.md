@@ -6,8 +6,12 @@ WalkingPal is a Python-based assistive application that uses an **OAK-D (Luxonis
 
 *   **Virtual Cane**: Detects obstacles in Left, Center, and Right zones using stereo depth.
 *   **Hazard Detection**: Identifies critical hazards like **Drop-offs** (stairs down/cliffs), **Stairs** (up), and **Potholes**.
-*   **Smart Audio (Sighted Guide Mode)**: Reduces audio clutter by only speaking when the scene changes or a hazard appears. Names specific obstacles (e.g., "Chair ahead") using AI.
-*   **Scene Description**: Uses **Multimodal LLMs** (Gemini 2.0 Flash, Llama 3.2 Vision) via OpenRouter to describe the scene on demand (or upon significant scene changes).
+*   **Hybrid Intelligence (3-Tier)**:
+    1.  **Online Tier**: Uses **Gemini 2.0 Flash** / **Qwen** for detailed analysis (requires internet).
+    2.  **Local Smart Tier**: Falls back to **Moondream2 (Local VLM)** on-device for high-quality object naming without internet (requires only CPU/GPU).
+    3.  **Offline Tier**: Uses on-camera **MobileNet-SSD** for ultra-fast basic object detection (Person, Chair, Bottle).
+*   **Smart Audio (Sighted Guide Mode)**: Reduces audio clutter. Bundles object names with navigation instructions (e.g., "Chair ahead, Go Left") and supports **Pre-emptive Interruption** to ensure urgent warnings cut off earlier messages.
+*   **Resilient Fallback**: Automatically switches between Online, Local, and Offline modes based on connectivity and API health.
 *   **OCR (Text Reading)**: reads signs and text in the environment using a hybrid Tesseract/EasyOCR engine.
 *   **Validation Logging**: Records synchronized video and metadata for offline validation and debugging.
 
@@ -33,21 +37,19 @@ The depth map is divided into three vertical ROI (Region of Interest) bands repr
 *   **Feedback**: Spatial audio tones and directional speech instructions ("Go Left", "Stop").
 
 #### B. Hazard Detection Algorithms
-*   **Drop-offs**: Analyzes the ratio of "invalid" (black) pixels in the floor area. If the floor suddenly disappears (high invalid ratio) or becomes impossibly distant, a drop-off is flagged.
-    *   *Dynamic Threshold*: Adjusts sensitivity based on camera pitch (IMU).
+*   **Drop-offs**: Analyzes the ratio of "invalid" (black) pixels in the floor area. Requires **>5% density of invalid pixels** within the critical zone to trigger, filtering out sensor noise.
 *   **Stairs**: Uses vertical edge detection on the depth map. A sequence of "steps" (regular jumps in depth) triggers "Stairs Up" or "Stairs Down".
 *   **Potholes**: Surface roughness analysis. It looks for "dips" (pixels significantly deeper than the median neighborhood) in the immediate ground plane.
 
-#### C. Smart Audio Filter (Sighted Guide)
-To prevent "audio fatigue", the system waits for state changes before speaking:
-1.  **Hazards First**: Danger signals (Drop-off, Stairs) always interrupt.
-2.  **State Change**: "Clear" -> "Blocked" triggers a message. "Blocked" -> "Blocked" (same condition) is silenced.
-3.  **Naming**: If an object is blocking the path, the system correlates it with YOLO detections to say "Chair ahead" instead of "Obstacle ahead".
+#### C. Smart Audio Filter & Controller
+*   **Interruption**: The `AudioController` actively manages the mixer channels. If a new message arrives, it stops the current one immediately to ensure the user hears the most relevant update.
+*   **Bundling**: Messages are constructed as single utterances ("Table ahead. Stop.") to prevent self-interruption.
 
-### 3. Scene Understanding (`scene_describer.py`)
-*   **Trigger**: Detects significant visual changes (histogram shift) to proactively describe new environments.
-*   **Model Fallback**: Uses a resilience chain. If the primary model (Gemini 2.0 Flash) fails with a 429 Rate Limit, it instantly falls back to Llama 3.2 Vision, ensuring high reliability.
-*   **Privacy**: Images are base64 encoded and sent over encrypted HTTPS. No local storage unless `--record` is used.
+### 3. Scene Understanding (`scene_describer.py` & `local_describer.py`)
+WalkingPal uses a sophisticated **Arbitration Logic**:
+1.  **Check Online**: If internet is up, tries OpenRouter APIs (Gemini/Qwen).
+2.  **Fallback to Local VLM**: If APIs fail (429/404/Offline), it instantiates `LocalDescriber` which runs the **Moondream2** model locally via PyTorch/Transformers.
+3.  **Fallback to Offline**: If Moondream is disabled or busy, it uses the OAK-D's built-in MobileNet detections.
 
 ### 4. Text Recognition (OCR)
 A hybrid engine provides the best trade-off between speed and accuracy:
@@ -61,28 +63,27 @@ A hybrid engine provides the best trade-off between speed and accuracy:
 
 Requirements:
 *   Python 3.10+
-*   Dependencies: `depthai<3.0`, `opencv-python`, `numpy`, `pygame`, `requests`
+*   Dependencies: `depthai<3.0`, `opencv-python`, `numpy`, `pygame`, `requests`, `transformers`, `torch`, `einops`
 
 ```bash
 pip install -r requirements.txt
-python download_model.py  # (Optional) Updates local YOLO blob
+python install.py  # Checks env and downloads small models
 ```
+
+**First Run**:
+When you first run with `--enable_local_vlm`, the application will download the Moondream2 model (~3GB) from Hugging Face.
 
 ## 🎮 Usage
 
-**Standard Navigation**:
+**Standard Navigation (Auto-Configured)**:
 ```bash
-python3 walkingPal.py
+python3 launch.py
 ```
+*Note: `launch.py` automatically enables Recording, Logging, and Local VLM.*
 
-**Developer/Debug Mode** (Visualizes depth map and AI overlays):
+**Manual Launch**:
 ```bash
-python3 walkingPal.py --monitor --debug --enable_yolo --enable_ocr
-```
-
-**Validation Recording**:
-```bash
-python3 walkingPal.py --record --record_fps 2.0
+python3 walkingPal.py --enable_local_vlm --record
 ```
 
 ## ⚠️ Safety Disclaimer
