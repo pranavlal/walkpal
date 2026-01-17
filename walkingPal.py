@@ -372,6 +372,7 @@ class AudioController:
         self._tts_engine = None
         self._sounds: Dict[str, Any] = {}
         self._temp_dir = tempfile.mkdtemp(prefix="walkpal_tts_")
+        self._current_channel = None # Track active channel for interruption
         
         # Async setup
         self._queue = queue.Queue()
@@ -437,6 +438,9 @@ class AudioController:
                 if item is None: break # Poison pill
                 
                 cmd, data, pan = item
+                
+                # IMPLEMENTATION OF INTERRUPTION IS DONE IN _play_sound
+                # But we can also clear the queue if it's getting backed up
                 
                 if cmd == 'tone':
                     self._play_tone_sync(data, pan)
@@ -514,9 +518,8 @@ class AudioController:
     def speak(self, text: str, pan: float = 0.0):
         """Queue a TTS request."""
         if self.enabled and text:
-            # Drain queue of old speech if it's backing up?
-            # For navigation, latest is greatest.
-            if self._queue.qsize() > 2:
+            # Drain queue of old speech if it's backing up
+            if self._queue.qsize() > 0:
                 try:
                     while not self._queue.empty():
                         self._queue.get_nowait()
@@ -529,6 +532,9 @@ class AudioController:
         if not self._pygame: return
         sound = self._sounds.get(name)
         if sound:
+            # Force stop previous speech for immediate hazard tone
+            if self._current_channel and self._current_channel.get_busy():
+                self._current_channel.stop()
             self._play_sound(sound, pan)
 
     def _speak_sync(self, tts_rate, text, pan):
@@ -580,8 +586,13 @@ class AudioController:
 
     def _play_sound(self, sound, pan: float):
         try:
+            # STOP PREVIOUS AUDIO if playing
+            if self._current_channel and self._current_channel.get_busy():
+                self._current_channel.stop()
+            
             channel = sound.play()
             if channel:
+                self._current_channel = channel # Track it
                 pan = max(-1.0, min(1.0, pan))
                 left = 1.0 - max(0.0, pan)
                 right = 1.0 + min(0.0, pan)
