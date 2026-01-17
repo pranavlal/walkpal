@@ -280,7 +280,28 @@ class DepthProcessor:
             critical_mask = (valid_u > w//3) & (valid_u < 2*w//3) & (valid_v > h*0.6)
             critical_dropoffs = dropoffs_deep & critical_mask
             
-            is_dropoff = np.count_nonzero(critical_dropoffs) > 200
+            # dropoff_count = np.count_nonzero(critical_dropoffs)
+            
+            # Robustness: 
+            # 1. Require significant number of pixels (noise rejection)
+            # 2. Require reasonable density (if only 50 pixels are valid, 10 dropoffs implies noise)
+            
+            valid_critical_count = np.count_nonzero(critical_mask)
+            dropoff_count = np.count_nonzero(critical_dropoffs)
+            
+            is_dropoff = False
+            if valid_critical_count > 1000:
+                # If we have good data, require > 5% to be dropoff to account for noise
+                # And at least 500 pixels total
+                ratio = dropoff_count / valid_critical_count
+                is_dropoff = (ratio > 0.05) and (dropoff_count > 500)
+            else:
+                 # Low valid data in critical region.
+                 # Could be a hole (no return) or black surface.
+                 # For safety, if it's REALLY empty, maybe warning?
+                 # But "is_dropoff" here means "GEOMETRIC dropoff" (points seen below).
+                 # If we don't see points, we don't trigger this.
+                 is_dropoff = False 
             
             return {
                 'plane': final_plane,
