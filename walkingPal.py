@@ -43,6 +43,7 @@ import yaml
 from depth_processor import DepthProcessor
 from dotenv import load_dotenv
 from scene_describer import SceneDescriber
+from local_describer import LocalDescriber
 from validation_logger import SessionLogger
 
 def load_config(config_path: str) -> Dict[str, Any]:
@@ -1191,6 +1192,10 @@ def main():
                     help="In auto mode: if tesseract quality < this, try easyocr fallback.")
     ap.add_argument("--easyocr_gpu", action="store_true",
                     help="Enable GPU acceleration for EasyOCR (requires CUDA).")
+    
+    # Local VLM
+    ap.add_argument("--enable_local_vlm", action="store_true", 
+                    help="Enable Local VLM (Moondream) fallback when offline.")
 
     # Speech/debug
     ap.add_argument("--speak_every_s", type=float, default=1.1)
@@ -1310,6 +1315,29 @@ def main():
     nav_processor = DepthProcessor(width=640, height=400)
 
     # === Device connection/reconnection loop ===
+    def perform_smart_analysis(frame_bgr):
+        """Tier 1: Online -> Tier 2: Local VLM"""
+        # 1. Try Online
+        res = None
+        if conn_monitor.is_online():
+            try:
+                res = scene_describer.analyze_navigation(frame=frame_bgr)
+            except Exception:
+                pass
+        
+        # 2. Try Local Fallback if online failed/skipped
+        if res is None and local_describer:
+            try:
+                txt = local_describer.analyze_image(frame_bgr, prompt="Identify the main obstacle or object directly ahead in 2-3 words.")
+                if txt:
+                     # Remove period
+                     txt = txt.strip().rstrip('.')
+                     res = {'label': txt}
+            except Exception:
+                pass
+        
+        return res
+
     retry_count = 0
     while retry_count < args.max_retries and not _shutdown_requested.is_set():
         try:
@@ -1329,6 +1357,11 @@ def main():
             # Initialize Scene Describer
             or_key = os.getenv("open_router_api_key") or os.getenv("OPEN_ROUTER_API_KEY")
             scene_describer = SceneDescriber(api_key=or_key)
+            
+            # Initialize Local Describer (Fallback)
+            local_describer = None
+            if args.enable_local_vlm:
+                local_describer = LocalDescriber() # lazy load on first use
 
             # Debouncers/smoothers (reset on each connection)
             dropoff_db = DebouncedBool(on_count=args.confirm_frames, off_count=args.clear_frames)
@@ -1478,7 +1511,9 @@ def main():
                     rgb_frame_now = frames.scene if frames.scene is not None else frames.video
 
                     # --- SMART NAV (ONLINE) ---
-                    if conn_monitor.is_online() and rgb_frame_now is not None:
+                    # --- SMART NAV (ONLINE + LOCAL) ---
+                    # Run if Online OR Local VLM enabled
+                    if (conn_monitor.is_online() or local_describer) and rgb_frame_now is not None:
                          # Collect result
                          if smart_nav_future and smart_nav_future.done():
                              try:
@@ -1498,8 +1533,8 @@ def main():
                              # For now, continuous scouting 
                              frame_copy = rgb_frame_now.copy()
                              smart_nav_future = smart_nav_executor.submit(
-                                 scene_describer.analyze_navigation,
-                                 frame=frame_copy
+                                 perform_smart_analysis,
+                                 frame_bgr=frame_copy
                              )
 
                     # 1. OCR Logic

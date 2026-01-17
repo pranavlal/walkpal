@@ -20,6 +20,7 @@ LAUNCH_ARGS = [
     "--ocr_fps", "1.25",
     "--record",      # Enable SessionLogger (JSONL + Images)
     "--record_fps", "2.0",
+    "--enable_local_vlm", # Enable Moondream2 fallback
 ]
 
 def main():
