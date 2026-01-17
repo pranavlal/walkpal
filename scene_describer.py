@@ -214,6 +214,72 @@ class SceneDescriber:
             logger.error("All fallback models failed.")
             return None
             
+            
         except Exception as e:
             logger.error(f"Critical error in _call_openrouter: {e}")
             return None
+
+    def analyze_navigation(self, frame: np.ndarray) -> Optional[Dict]:
+        """
+        Analyze frame for specific navigation hazards in JSON format.
+        Returns: {'label': 'Wet Floor Sign', 'hazard_type': 'warning'} or None
+        """
+        if not self.api_key:
+            return None
+
+        # Resize and encode
+        h, w = frame.shape[:2]
+        if w > 320:
+            frame = cv2.resize(frame, (320, 240), interpolation=cv2.INTER_AREA)
+        
+        _, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 60])
+        b64_image = base64.b64encode(buffer).decode('utf-8')
+
+        # Precise prompt for JSON
+        prompt_text = (
+            "Identify the single most prominent obstacle or hazard directly in the path. "
+            "Return valid JSON only: {\"label\": \"<short_name>\", \"hazard_type\": \"<warning|info>\"}. "
+            "Example: {\"label\": \"Wet Floor Sign\", \"hazard_type\": \"warning\"}. "
+            "If path is clear, return null."
+        )
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/pranavlal/walkpal",
+            "X-Title": "WalkingPal"
+        }
+
+        # Use cheap model for navigation speed
+        model = self.cheap_model
+        
+        data = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "user", 
+                    "content": [
+                        {"type": "text", "text": prompt_text},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}}
+                    ]
+                }
+            ],
+            "response_format": {"type": "json_object"}
+        }
+
+        try:
+            resp = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data, timeout=8)
+            if resp.status_code == 200:
+                res = resp.json()
+                content = res['choices'][0]['message']['content']
+                # Parse JSON
+                import json
+                obj = json.loads(content)
+                if obj and 'label' in obj:
+                    return obj
+            else:
+                logger.warning(f"Nav analysis failed: {resp.status_code}")
+        except Exception as e:
+            logger.warning(f"Nav analysis error: {e}")
+            
+        return None

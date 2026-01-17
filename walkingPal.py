@@ -231,6 +231,64 @@ def install_signal_handlers():
 
 
 # -----------------------------
+# Connectivity Monitor
+# -----------------------------
+class ConnectivityMonitor:
+    """
+    Checks internet connectivity in a background thread.
+    Notifies when status changes (Online <-> Offline).
+    """
+    def __init__(self, check_interval_s: float = 2.0, host: str = "8.8.8.8"):
+        self.check_interval_s = check_interval_s
+        self.host = host
+        self.online = False
+        self._stop_event = threading.Event()
+        self._thread = None
+        self._status_changed = False
+        self._lock = threading.Lock()
+
+    def start(self):
+        self._thread = threading.Thread(target=self._worker, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=1.0)
+
+    def _worker(self):
+        import socket
+        logger.info("ConnectivityMonitor started.")
+        while not self._stop_event.is_set():
+            is_connected = False
+            try:
+                # Simple ping via connect (low overhead)
+                with socket.create_connection((self.host, 53), timeout=1.5):
+                    is_connected = True
+            except OSError:
+                pass
+
+            with self._lock:
+                if is_connected != self.online:
+                    self.online = is_connected
+                    self._status_changed = True
+                    logger.info(f"Connectivity Changed: Online={self.online}")
+            
+            time.sleep(self.check_interval_s)
+
+    def poll_status_change(self) -> Optional[bool]:
+        """Returns new status if changed, else None."""
+        with self._lock:
+            if self._status_changed:
+                self._status_changed = False
+                return self.online
+            return None
+    
+    def is_online(self) -> bool:
+        with self._lock:
+            return self.online
+
+# -----------------------------
 # Watchdog Timer
 # -----------------------------
 class Watchdog:
@@ -1232,6 +1290,10 @@ def main():
         session_logger = SessionLogger(record_depth=args.record_depth)
         logger.info(f"Session recording enabled. Logs in: {session_logger.session_dir}")
 
+    # Initialize Connectivity Monitor
+    conn_monitor = ConnectivityMonitor()
+    conn_monitor.start()
+
     # Initialize Depth Processor
     # Assuming OAK-D standard resolution for depth is 640x400
     nav_processor = DepthProcessor(width=640, height=400)
@@ -1297,6 +1359,12 @@ def main():
 
             audio_controller.speak(i18n('nav_started'))
 
+            # Smart Nav State
+            smart_label = None
+            smart_label_ts = 0.0
+            smart_nav_future = None
+            smart_nav_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="SmartNav")
+
             # Verification State
             verifying_logic = args.self_test
             verification_start = time.time()
@@ -1349,8 +1417,17 @@ def main():
 
                     now = time.time()
 
-                    # YOLO hazards (optional)
+                    # Connectivity Status Check
+                    new_status = conn_monitor.poll_status_change()
+                    if new_status is not None:
+                        if new_status:
+                            audio_controller.speak("Back online. Smart mode active.")
+                        else:
+                            audio_controller.speak("Going offline. Switching to basic mode.")
+
+                    # YOLO hazards (Local / Offline Fallback)
                     hazard_detected = False
+                    # Update local detections regardless (always running)
                     if args.enable_yolo:
                         detections = camera.get_detections()
                         if detections:
@@ -1385,6 +1462,31 @@ def main():
 
                     # Unified RGB Frame
                     rgb_frame_now = frames.scene if frames.scene is not None else frames.video
+
+                    # --- SMART NAV (ONLINE) ---
+                    if conn_monitor.is_online() and rgb_frame_now is not None:
+                         # Collect result
+                         if smart_nav_future and smart_nav_future.done():
+                             try:
+                                 res = smart_nav_future.result()
+                                 smart_nav_future = None
+                                 if res:
+                                     smart_label = res.get('label')
+                                     smart_label_ts = now
+                                     logger.info(f"Smart Label: {smart_label}")
+                             except Exception as e:
+                                 logger.warning(f"Smart Nav task error: {e}")
+                                 smart_nav_future = None
+                         
+                         # Submit new
+                         if smart_nav_future is None and (now - smart_label_ts) > 1.0: # Check every 1s
+                             # Only submit if we are actually moving or blocked (optimization?)
+                             # For now, continuous scouting 
+                             frame_copy = rgb_frame_now.copy()
+                             smart_nav_future = smart_nav_executor.submit(
+                                 scene_describer.analyze_navigation,
+                                 frame=frame_copy
+                             )
 
                     # 1. OCR Logic
                     if args.enable_ocr:
@@ -1612,7 +1714,7 @@ def main():
                     if stairs and last_stairs_label: parts.append(i18n(last_stairs_label))
                     if pothole: parts.append(i18n('pothole'))
                 
-                    # 2. Obstacle Naming (Improved)
+                    # 2. Obstacle Naming (Improved: Online > Offline)
                     obstacle_pan = 0.0
                     if blocked:
                         # Determine obstacle pan
@@ -1621,10 +1723,19 @@ def main():
                         elif nav_hints['R'] == 'blocked':
                             obstacle_pan = 0.8
                         
-                        # Named Obstacle or Generic
-                        if last_hazard_label and (now - last_hazard_ts < 2.0):
+                        # Hybrid Labeling Logic
+                        # 1. Check Smart Label (Online) - Valid for 3.0s
+                        final_label = None
+                        if conn_monitor.is_online() and smart_label and (now - smart_label_ts < 3.0):
+                            final_label = smart_label
+                        
+                        # 2. Fallback to Local YOLO (Offline/Faster) - Valid for 2.0s
+                        elif last_hazard_label and (now - last_hazard_ts < 2.0):
+                            final_label = last_hazard_label
+
+                        if final_label:
                              # "Chair ahead" or "Dog on left"
-                             parts.append(f"{last_hazard_label}") 
+                             parts.append(f"{final_label}") 
                     
                     parts.append(nav_msg)
                     final = " ".join(parts).strip()

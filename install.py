@@ -168,9 +168,41 @@ def main():
     ensure_python_version()
     create_venv(force=args.force)
     install_requirements(with_easyocr=args.with_easyocr)
+    ensure_model_blob()
     system_checks()
     runtime_checks(probe_device=args.probe_device)
     print_next_steps(with_easyocr=args.with_easyocr)
+
+def ensure_model_blob() -> None:
+    blob_path = ROOT / "mobilenet-ssd.blob"
+    if blob_path.exists():
+        print(f"\n[OK] Model blob found: {blob_path}")
+        return
+
+    print("\n>>> Downloading MobileNet-SSD blob (approx 14MB)...")
+    py = venv_python_path()
+    
+    # Run a snippet inside the venv to use the just-installed blobconverter
+    script = r"""
+import blobconverter
+import shutil
+import sys
+from pathlib import Path
+
+try:
+    path = blobconverter.from_zoo(name="mobilenet-ssd", zoo_type="intel", shaves=6)
+    print(f"Downloaded to {path}")
+    shutil.move(path, "mobilenet-ssd.blob")
+    print("Success.")
+except Exception as e:
+    print(f"Error: {e}")
+    sys.exit(1)
+"""
+    try:
+        run([str(py), "-c", script], cwd=ROOT)
+    except Exception:
+        print("[WARN] Failed to download blob automatically. run 'pip install blobconverter' and download manually.")
+
 
 
 def system_checks() -> None:
