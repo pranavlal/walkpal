@@ -1333,6 +1333,7 @@ def main():
             last_spoken_ts = 0.0
             last_pothole_announce_ts = 0.0
             last_hazard_announce_ts = 0.0
+            last_hazard_ts = 0.0
             last_ocr_ts = 0.0
             last_ocr_announce_ts = 0.0
             last_ocr_announce_ts = 0.0
@@ -1447,6 +1448,7 @@ def main():
                             hazard_detected = best is not None
                             if hazard_detected:
                                 last_hazard_label = best
+                                last_hazard_ts = now
                     
                         # Debounce
                         hazard_present = hazard_db.update(hazard_detected)
