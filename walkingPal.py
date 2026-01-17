@@ -1674,13 +1674,14 @@ def main():
                     # Logic Mapping to Tones/Speech
                     
                     # Dropoff
-                    # GUARD: Only valid if pitch is reasonable!
-                    # If looking at ceiling (> 30 deg up implies negative pitch, or depending on IMU convention)
-                    # Let's assume useful range is -30 (up) to +40 (down).
-                    # Extremes cause geometric confusion.
+                    # GUARD: Only valid if pitch is reasonable AND light is sufficient!
+                    # 1. Pitch: -30 to +50
+                    # 2. Light: If 'dark', sensor noise looks like infinite dropoff (invalid pixels).
                     
                     pitch_ok = (-30.0 < pitch_deg < 50.0)
-                    if not pitch_ok:
+                    light_ok = (light != "dark")
+                    
+                    if not (pitch_ok and light_ok):
                         dropoff_detected_now = False
                         
                     dropoff = dropoff_db.update(dropoff_detected_now)
