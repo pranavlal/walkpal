@@ -17,7 +17,9 @@ LAUNCH_ARGS = [
     "--enable_ocr",
     "--ocr_engine", "auto",
     "--ocr_lang", "eng+hin",
-    "--ocr_fps", "1.25",
+    "--speak_every_s", "2.5",     # Less chatter (was 1.1)
+    "--hazard_cooldown_s", "5.0", # Less hazard repetition
+    "--ocr_engine", "tesseract",  # Default to Tesseract (CPU) to avoid GPU OOM/Context clash
     "--record",      # Enable SessionLogger (JSONL + Images)
     "--record_fps", "2.0",
     "--enable_local_vlm", # Enable Moondream2 fallback
