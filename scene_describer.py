@@ -250,36 +250,52 @@ class SceneDescriber:
             "X-Title": "WalkingPal"
         }
 
-        # Use cheap model for navigation speed
-        model = self.cheap_model
-        
-        data = {
-            "model": model,
-            "messages": [
-                {
-                    "role": "user", 
-                    "content": [
-                        {"type": "text", "text": prompt_text},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}}
-                    ]
-                }
-            ],
-            "response_format": {"type": "json_object"}
-        }
+        # Prepare list of models to try
+        models_to_try = [self.cheap_model]
+        for m in self.fallback_models:
+            if m != self.cheap_model:
+                models_to_try.append(m)
 
-        try:
-            resp = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data, timeout=8)
-            if resp.status_code == 200:
-                res = resp.json()
-                content = res['choices'][0]['message']['content']
-                # Parse JSON
-                import json
-                obj = json.loads(content)
-                if obj and 'label' in obj:
-                    return obj
-            else:
-                logger.warning(f"Nav analysis failed: {resp.status_code}")
-        except Exception as e:
-            logger.warning(f"Nav analysis error: {e}")
+        for model in models_to_try:
+            data = {
+                "model": model,
+                "messages": [
+                    {
+                        "role": "user", 
+                        "content": [
+                            {"type": "text", "text": prompt_text},
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}}
+                        ]
+                    }
+                ],
+                "response_format": {"type": "json_object"}
+            }
+
+            try:
+                resp = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data, timeout=8)
+                if resp.status_code == 200:
+                    res = resp.json()
+                    if 'choices' in res and len(res['choices']) > 0:
+                        content = res['choices'][0]['message']['content']
+                        # Parse JSON
+                        import json
+                        try:
+                            obj = json.loads(content)
+                            if obj and 'label' in obj:
+                                return obj
+                        except json.JSONDecodeError:
+                            logger.warning(f"Nav JSON parse failed for {model}: {content[:50]}...")
+                            return None
+                            
+                # Check for non-retryable
+                if resp.status_code in (400, 401):
+                    logger.error(f"Nav non-retryable error ({model}): {resp.status_code}")
+                    return None
+                    
+                # Retryable (429, 5xx)
+                logger.warning(f"Nav model {model} failed ({resp.status_code}). Trying next fallback...")
+                
+            except Exception as e:
+                logger.warning(f"Nav analysis error for {model}: {e}. Retrying...")
             
         return None
