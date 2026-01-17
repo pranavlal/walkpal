@@ -1674,6 +1674,15 @@ def main():
                     # Logic Mapping to Tones/Speech
                     
                     # Dropoff
+                    # GUARD: Only valid if pitch is reasonable!
+                    # If looking at ceiling (> 30 deg up implies negative pitch, or depending on IMU convention)
+                    # Let's assume useful range is -30 (up) to +40 (down).
+                    # Extremes cause geometric confusion.
+                    
+                    pitch_ok = (-30.0 < pitch_deg < 50.0)
+                    if not pitch_ok:
+                        dropoff_detected_now = False
+                        
                     dropoff = dropoff_db.update(dropoff_detected_now)
                     
                     # Blocked?
@@ -1695,8 +1704,13 @@ def main():
 
 
                     # Stairs
-                    stairs_label_raw = detect_stairs(depth, roi_cache['stairs_x0'], roi_cache['stairs_x1'],
-                                                      roi_cache['stairs_y0'], roi_cache['stairs_y1'])
+                    # GUARD: also pitch sensitive
+                    if pitch_ok:
+                        stairs_label_raw = detect_stairs(depth, roi_cache['stairs_x0'], roi_cache['stairs_x1'],
+                                                          roi_cache['stairs_y0'], roi_cache['stairs_y1'])
+                    else:
+                        stairs_label_raw = None
+                        
                     stairs_raw = stairs_label_raw is not None
                     stairs = stairs_db.update(stairs_raw)
                     # Capture stable label on rising edge (transition from False to True)

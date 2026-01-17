@@ -48,7 +48,8 @@ class LocalDescriber:
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.model_id, 
                 trust_remote_code=True,
-                revision="2024-08-26" 
+                revision="2024-08-26",
+                torch_dtype=torch.float16
             ).to(self.device)
             
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_id, revision="2024-08-26")
