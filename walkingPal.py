@@ -1168,7 +1168,7 @@ def main():
     ap.add_argument("--enable_yolo", action="store_true")
     ap.add_argument("--yolo_fps", type=float, default=4.0)
     ap.add_argument("--yolo_conf", type=float, default=0.50)
-    ap.add_argument("--hazards", type=str, default="dog,cat,cow,person",
+    ap.add_argument("--hazards", type=str, default="dog,cat,cow,person,chair,bottle,sofa,monitor,table",
                     help="Comma list of YOLO classes to announce.")
     ap.add_argument("--hazard_on", type=int, default=2)
     ap.add_argument("--hazard_off", type=int, default=3)

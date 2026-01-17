@@ -24,7 +24,9 @@ class SceneDescriber:
         # Fallback Strategy: Primary -> Thinking -> Llama -> Qwen
         self.fallback_models = [
             cheap_model,
+            "google/gemini-2.0-flash-exp:free",
             "meta-llama/llama-3.2-11b-vision-instruct:free",
+            "mistralai/pixtral-12b:free",
             "qwen/qwen-2-vl-7b-instruct:free" 
         ]
         
