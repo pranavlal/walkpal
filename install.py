@@ -102,6 +102,13 @@ print("opencv:", cv2.__version__)
 import depthai as dai
 print("depthai:", getattr(dai, "__version__", "unknown"))
 
+import torch
+print("torch:", torch.__version__)
+print("CUDA Available:", torch.cuda.is_available())
+
+import transformers
+print("transformers:", transformers.__version__)
+
 # OCR wrappers
 try:
     import pytesseract
