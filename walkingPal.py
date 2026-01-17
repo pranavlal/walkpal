@@ -41,6 +41,9 @@ import math
 import depthai as dai
 import yaml
 from depth_processor import DepthProcessor
+from dotenv import load_dotenv
+from scene_describer import SceneDescriber
+from validation_logger import SessionLogger
 
 def load_config(config_path: str) -> Dict[str, Any]:
     """Load config from yaml file if exists, else return empty."""
@@ -1025,107 +1028,14 @@ def run_ocr_auto(
 # -----------------------------
 # DepthAI v3 pipeline builder
 # -----------------------------
-def build_pipeline_and_queues(
-    fps_depth: float,
-    confidence: int,
-    lr_check: bool,
-    extended_disparity: bool,
-    subpixel: bool,
-    enable_yolo: bool,
-    yolo_fps: float,
-    enable_ocr: bool,
-    ocr_fps: float,
-    ocr_size: Tuple[int, int],
-    enable_imu: bool,
-):
-    """
-    - Stereo depth from CAM_B/C
-    - Brightness preview from CAM_B
-    - Optional YOLOv6-nano DetectionNetwork on CAM_A (downloads from model zoo)
-    - Optional high-res CAM_A output queue for OCR (only if enable_ocr)
-    - Optional IMU rotation vector
-    """
-    pipeline = dai.Pipeline()
+# Pipeline builder moved to cameras.oak_d
+from cameras.oak_d import OakDCamera
 
-    # CAM_B: stereo + brightness preview
-    camL_node = pipeline.create(dai.node.Camera)
-    camL = camL_node.build(dai.CameraBoardSocket.CAM_B)
-    
-    left_stereo = camL.requestOutput((640, 400), type=dai.ImgFrame.Type.GRAY8, fps=fps_depth)
-    left_preview = camL.requestOutput((320, 200), type=dai.ImgFrame.Type.GRAY8, fps=fps_depth)
-
-    # CAM_C: stereo
-    camR_node = pipeline.create(dai.node.Camera)
-    camR = camR_node.build(dai.CameraBoardSocket.CAM_C)
-    
-    right_stereo = camR.requestOutput((640, 400), type=dai.ImgFrame.Type.GRAY8, fps=fps_depth)
-
-    stereo = pipeline.create(dai.node.StereoDepth)
-    stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.FAST_DENSITY)
-    stereo.initialConfig.setConfidenceThreshold(confidence)
-    stereo.setLeftRightCheck(lr_check)
-    stereo.setExtendedDisparity(extended_disparity)
-    stereo.setSubpixel(subpixel)
-    try:
-        stereo.initialConfig.setMedianFilter(dai.MedianFilter.KERNEL_7x7)
-    except AttributeError as e:
-        logger.warning("MedianFilter setting not supported: %s", e)
-
-    left_stereo.link(stereo.left)
-    right_stereo.link(stereo.right)
-
-    q_depth = stereo.depth.createOutputQueue(maxSize=2, blocking=False)
-    q_preview = left_preview.createOutputQueue(maxSize=1, blocking=False)
-
-    q_det = None
-    q_yolo_rgb = None
-    label_map = None
-    q_ocr_rgb = None
-    q_imu = None
-
-    if enable_imu:
-        try:
-            imu = pipeline.create(dai.node.IMU)
-            imu.enableIMUSensor(dai.IMUSensor.ROTATION_VECTOR, 10)
-            imu.setBatchReportThreshold(1)
-            imu.setMaxBatchReports(10)
-            q_imu = imu.out.createOutputQueue(maxSize=10, blocking=False)
-            logger.info("IMU enabled in pipeline.")
-        except Exception as e:
-            logger.warning("Failed to enable IMU node: %s", e)
-            q_imu = None
-
-    if enable_yolo or enable_ocr:
-        camA_node = pipeline.create(dai.node.Camera)
-        camA = camA_node.build(dai.CameraBoardSocket.CAM_A)
-
-        # Note: setFps not supported on Camera node. FPS is controlled via requestOutput.
-        
-        if enable_ocr:
-            ocr_out = camA.requestOutput(
-                ocr_size,
-                type=dai.ImgFrame.Type.BGR888p,
-                fps=float(ocr_fps),
-                resizeMode=dai.ImgResizeMode.CROP,
-            )
-            q_ocr_rgb = ocr_out.createOutputQueue(maxSize=2, blocking=False)
-        else:
-            # If only YOLO is enabled, we might want to constrain FPS if possible, 
-            # or let it run at default. To ensure consistency if yolo_fps is critical, 
-            # we could create a dummy output, but for now we follow standard behavior.
-            pass
-
-        if enable_yolo:
-            det = pipeline.create(dai.node.DetectionNetwork).build(camA, dai.NNModelDescription("yolov6-nano"))
-            label_map = det.getClasses()
-            q_yolo_rgb = det.passthrough.createOutputQueue(maxSize=2, blocking=False)
-            q_det = det.out.createOutputQueue(maxSize=4, blocking=False)
-
-    return pipeline, q_depth, q_preview, q_det, q_yolo_rgb, label_map, q_ocr_rgb, q_imu
 
 
 
 def main():
+    load_dotenv()
     # 1. Load config file first (defaults)
     # Check for default locations
     default_config = "config.yaml"
@@ -1244,6 +1154,11 @@ def main():
     ap.add_argument("--disable_imu", action="store_true",
                     help="Disable IMU-based tilt detection (pitch filtering).")
 
+    # Validation Logging
+    ap.add_argument("--record", action="store_true", help="Enable session recording for validation.")
+    ap.add_argument("--record_fps", type=float, default=2.0, help="Frames per second to log.")
+    ap.add_argument("--record_depth", action="store_true", help="Save depth frames to disk (high storage usage).")
+
     args = ap.parse_args()
 
     # Sanity
@@ -1311,6 +1226,12 @@ def main():
     if not hazards:
         hazards = {"dog", "cat", "cow", "person"}
 
+    # Initialize Validation Logger
+    session_logger: Optional[SessionLogger] = None
+    if args.record:
+        session_logger = SessionLogger(record_depth=args.record_depth)
+        logger.info(f"Session recording enabled. Logs in: {session_logger.session_dir}")
+
     # Initialize Depth Processor
     # Assuming OAK-D standard resolution for depth is 640x400
     nav_processor = DepthProcessor(width=640, height=400)
@@ -1321,19 +1242,20 @@ def main():
         try:
             logger.info("Connecting to OAK-D device (attempt %d/%d)...", retry_count + 1, args.max_retries)
             
-            pipeline, q_depth, q_preview, q_det, q_yolo_rgb, label_map, q_ocr_rgb, q_imu = build_pipeline_and_queues(
-                fps_depth=args.fps,
-                confidence=args.confidence,
-                lr_check=args.lr_check,
-                extended_disparity=args.extended_disparity,
-                subpixel=args.subpixel,
+            camera = OakDCamera(
                 enable_yolo=args.enable_yolo,
-                yolo_fps=args.yolo_fps,
-                enable_ocr=args.enable_ocr,
-                ocr_fps=args.ocr_fps,
-                ocr_size=(args.ocr_width, args.ocr_height),
-                enable_imu=not args.disable_imu,
+                enable_potholes=args.enable_potholes,
+                enable_ocr=args.enable_ocr
             )
+            
+            if not camera.start():
+                raise RuntimeError("Failed to start OAK-D pipeline.")
+            
+            label_map = camera.label_map
+            
+            # Initialize Scene Describer
+            or_key = os.getenv("open_router_api_key") or os.getenv("OPEN_ROUTER_API_KEY")
+            scene_describer = SceneDescriber(api_key=or_key)
 
             # Debouncers/smoothers (reset on each connection)
             dropoff_db = DebouncedBool(on_count=args.confirm_frames, off_count=args.clear_frames)
@@ -1354,6 +1276,8 @@ def main():
             last_ocr_announce_ts = 0.0
             last_low_light_announce_ts = 0.0
             last_monitor_ts = 0.0
+            last_log_ts = 0.0
+            last_nav_state = None # For smart audio filter
             
             # Reset OCR future on reconnection
             ocr_future = None
@@ -1365,32 +1289,41 @@ def main():
             roi_cache: Optional[Dict[str, Any]] = None
             pitch_deg: float = 0.0
 
-            pipeline.start()
+            # Pipeline already started by camera.start()
             logger.info("Pipeline started successfully.")
             
             # Reset retry count on successful connection
             retry_count = 0
 
             audio_controller.speak(i18n('nav_started'))
-    
+
+            # Verification State
+            verifying_logic = args.self_test
+            verification_start = time.time()
+            verification_planes = 0
+            verification_frames = 0
+            verification_done = False
+     
             # Start watchdog
             if watchdog:
                 watchdog.start()
 
             last_depth_ts = time.time()
-            if True: # with pipeline:
-                while pipeline.isRunning() and not _shutdown_requested.is_set():
+            last_depth_ts = time.time()
+            if True: 
+                while camera.is_running() and not _shutdown_requested.is_set():
                     # Reset watchdog at start of each loop iteration
                     if watchdog:
                         watchdog.reset()
                     
-                    # logger.info("Trace: Loop Start")
-                    # Brightness (CAM_B preview)
-                    pmsg = q_preview.tryGet()
-                    if pmsg is not None:
-                        brightness = float(np.mean(pmsg.getFrame()))
+                    # Fetch all frames
+                    frames = camera.get_frames()
+
+                    # Brightness
+                    brightness = 0.0
+                    if frames.preview is not None:
+                        brightness = float(np.mean(frames.preview))
                     light = classify_light(brightness)
-                    # logger.info("Trace: Light Classified")
 
                     # Low light warning
                     is_dark = (light == "dark")
@@ -1416,34 +1349,28 @@ def main():
 
                     now = time.time()
 
-
                     # YOLO hazards (optional)
                     hazard_detected = False
-                    if args.enable_yolo and q_det is not None and q_yolo_rgb is not None:
-                        if q_det.has():
-                            det_msg: dai.ImgDetections = q_det.tryGet()
+                    if args.enable_yolo:
+                        detections = camera.get_detections()
+                        if detections:
                             best = None
                             best_conf = 0.0
-                            if det_msg is not None:
-                                for d in det_msg.detections:
-                                    if d.confidence < args.yolo_conf:
-                                        continue
-                                    if label_map and 0 <= d.label < len(label_map):
-                                        label = str(label_map[d.label]).lower()
-                                    else:
-                                        label = str(d.label)
-                                    if label in hazards and d.confidence > best_conf:
-                                        best = label
-                                        best_conf = d.confidence
+                            for d in detections:
+                                if d.confidence < args.yolo_conf:
+                                    continue
+                                if label_map and 0 <= d.label < len(label_map):
+                                    label = str(label_map[d.label]).lower()
+                                else:
+                                    label = str(d.label)
+                                if label in hazards and d.confidence > best_conf:
+                                    best = label
+                                    best_conf = d.confidence
                             hazard_detected = best is not None
                             if hazard_detected:
                                 last_hazard_label = best
                     
-                        # Drain unused RGB queue to prevent memory buildup
-                        while q_yolo_rgb.has():
-                            q_yolo_rgb.tryGet()
-                    
-                        # Update debouncer every frame for consistent state
+                        # Debounce
                         hazard_present = hazard_db.update(hazard_detected)
                         if not hazard_present:
                             last_hazard_label = None
@@ -1451,64 +1378,66 @@ def main():
                         if hazard_present and last_hazard_label and (now - last_hazard_announce_ts) >= args.hazard_cooldown_s:
                             msg = i18n('hazard', last_hazard_label)
                             if (now - last_spoken_ts) >= args.speak_every_s:
-                                # Spatial audio: only speech announcement
                                 audio_controller.speak(msg)
                                 last_spoken = msg
                                 last_spoken_ts = now
                                 last_hazard_announce_ts = now
 
-                    # HIGH-RES OCR (optional) with graceful degradation
-                    if args.enable_ocr and q_ocr_rgb is not None:
-                        # 1. Check if ANY recurring text result is ready
-                        if ocr_future and ocr_future.done():
-                            try:
-                                txt = ocr_future.result()
-                                ocr_future = None # clear slot
-                                if txt and (now - last_ocr_announce_ts) >= args.ocr_cooldown_s:
-                                    omsg = i18n('sign_reads', sanitize_tts_text(txt))
-                                    if (now - last_spoken_ts) >= args.speak_every_s:
-                                        audio_controller.speak(omsg)
-                                        last_spoken = omsg
-                                        last_spoken_ts = now
-                                        last_ocr_announce_ts = now
-                            except Exception as e:
-                                logger.error("OCR thread crashed: %s", e)
-                                ocr_future = None
+                    # Unified RGB Frame
+                    rgb_frame_now = frames.scene if frames.scene is not None else frames.video
 
-                        # 2. Submit new frame if idle
-                        if ocr_future is None and q_ocr_rgb.has():
-                            # Drain to get the newest frame
-                            latest_ocr_pkt = None
-                            while q_ocr_rgb.has():
-                                latest_ocr_pkt = q_ocr_rgb.tryGet()
-                        
-                            if latest_ocr_pkt and (now - last_ocr_ts) >= args.ocr_every_s:
-                                last_ocr_ts = now
-                                frame_bgr = latest_ocr_pkt.getCvFrame().copy() # copy important for thread safety
-                                ocr_future = ocr_executor.submit(
-                                    run_ocr_auto,
-                                    bgr=frame_bgr,
-                                    ocr_engine=args.ocr_engine,
-                                    tesseract_lang=args.ocr_lang.strip(),
-                                    pytesseract_mod=pytesseract_mod,
-                                    easyocr_wrap=easyocr_wrap,
-                                    min_len=args.ocr_min_len,
-                                    auto_fallback_min_quality=args.ocr_auto_min_quality,
-                                )
+                    # 1. OCR Logic
+                    if args.enable_ocr:
+                         # Check results
+                         if ocr_future and ocr_future.done():
+                             try:
+                                 txt = ocr_future.result()
+                                 ocr_future = None
+                                 if txt and (now - last_ocr_announce_ts) >= args.ocr_cooldown_s:
+                                     omsg = i18n('sign_reads', sanitize_tts_text(txt))
+                                     if (now - last_spoken_ts) >= args.speak_every_s:
+                                         audio_controller.speak(omsg)
+                                         last_spoken = omsg
+                                         last_spoken_ts = now
+                                         last_ocr_announce_ts = now
+                             except Exception as e:
+                                 logger.error("OCR thread crashed: %s", e)
+                                 ocr_future = None
+                         
+                         # Submit new job
+                         if ocr_future is None and rgb_frame_now is not None:
+                             if (now - last_ocr_ts) >= args.ocr_every_s:
+                                 last_ocr_ts = now
+                                 # Start OCR
+                                 frame_bgr = rgb_frame_now.copy()
+                                 ocr_future = ocr_executor.submit(
+                                     run_ocr_auto,
+                                     bgr=frame_bgr,
+                                     ocr_engine=args.ocr_engine,
+                                     tesseract_lang=args.ocr_lang.strip(),
+                                     pytesseract_mod=pytesseract_mod,
+                                     easyocr_wrap=easyocr_wrap,
+                                     min_len=args.ocr_min_len,
+                                     auto_fallback_min_quality=args.ocr_auto_min_quality,
+                                 )
 
-                    # logger.info("Trace: Depth Check")
+                    # 2. Scene Description Logic
+                    if rgb_frame_now is not None:
+                         desc = scene_describer.process(rgb_frame_now)
+                         if desc:
+                             logger.info(f"Speaking Scene Desc: {desc}")
+                             audio_controller.speak(desc)
+
                     # Depth frame
-                    depth_pkt = q_depth.tryGet()
+                    depth = frames.depth
                 
-                    if depth_pkt is None:
+                    if depth is None:
                         if time.time() - last_depth_ts > 5.0:
-                            logger.warning("No depth frames received for 5 seconds - check device connection/bandwidth.")
+                            logger.warning("No depth frames received for 5 seconds - check connection.")
                             last_depth_ts = time.time()
                         time.sleep(0.004)
                         continue
                     last_depth_ts = time.time()
-                
-                    depth = depth_pkt.getFrame()
                     h, w = depth.shape[:2]
 
                     # Cache ROI boundaries (computed once, resolution is constant)
@@ -1530,30 +1459,7 @@ def main():
                             'stairs_y0': int(h * 0.30),
                             'stairs_y1': int(h * 0.95),
                         }
-
-                    # Update Pitch (Tilt) estimate
-                    # Consolidated logic: Prefer IMU, fallback to SW.
-                    # Sign convention: Negative = Looking Up, Positive = Looking Down (verified for SW).
-                    p_curr = 0.0
-                    has_imu_data = False
                     
-                    if q_imu:
-                        while q_imu.has():
-                            imu_pkt = q_imu.tryGet()
-                            if imu_pkt and imu_pkt.packets:
-                                rv = imu_pkt.packets[-1].rotationVector
-                                _, p_rad, _ = euler_from_quaternion(rv.i, rv.j, rv.k, rv.real)
-                                p_curr = math.degrees(p_rad)
-                                has_imu_data = True
-                    
-                    if not has_imu_data:
-                        # Fallback (SW estimation)
-                        # Note: estimate_pitch_from_depth returns Negative for Up, Positive for Down.
-                        p_curr = estimate_pitch_from_depth(depth, camera_height_m=args.camera_height)
-                    
-                    # Apply simple IIR filter
-                    pitch_deg = pitch_deg * 0.7 + p_curr * 0.3
-
                     # === NEW ROBUST NAVIGATION LOGIC ===
                     
                     nav_result = nav_processor.process_frame(depth)
@@ -1564,23 +1470,55 @@ def main():
                     dropoff_detected_now = nav_result['dropoff']
                     plane_eq = nav_result['plane']
                     debug_img = nav_result['debug_img']
+
+                    if nav_result['plane'] is not None:
+                        # Optional: Validate plane normal if needed
+                        pass
                     
-                    # Update Debug Visualization
-                    if args.debug or args.monitor:
-                         try:
-                             # Overlay text
-                             status_text = f"Plane: {'OK' if plane_eq is not None else 'LOST'}"
-                             cv2.putText(debug_img, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                             if dropoff_detected_now:
-                                 cv2.putText(debug_img, "DROPOFF", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                             
-                             if args.debug:
-                                 cv2.imshow("WalkingPal Debug", debug_img)
-                                 key = cv2.waitKey(1)
-                                 if key == ord('q'):
-                                      _shutdown_requested.set()
-                         except Exception as e:
-                             pass
+                    # === STARTUP VERIFICATION FOR BLIND USERS ===
+                    if verifying_logic and not verification_done:
+                        verification_frames += 1
+                        if plane_eq is not None:
+                            verification_planes += 1
+                        
+                        # Run for 3 seconds
+                        if (now - verification_start) > 3.0:
+                            success_rate = verification_planes / max(1, verification_frames)
+                            logger.info(f"Verification: {verification_planes}/{verification_frames} frames with valid plane ({success_rate:.1%})")
+                            
+                            if success_rate > 0.5:
+                                audio_controller.speak("Logic check passed. Floor detected.")
+                            else:
+                                audio_controller.speak("Logic check warning. Floor usage unclear. Please tilt camera.")
+                            
+                            verifying_logic = False
+                            verification_done = True
+                            
+                    # Update Pitch (Tilt) estimate
+                    # Consolidated logic: Prefer IMU, fallback to SW.
+                    # Sign convention: Negative = Looking Up, Positive = Looking Down (verified for SW).
+                    p_curr = 0.0
+                    has_imu_data = False
+                    
+                    imu_pkt = camera.get_imu()
+                    if imu_pkt and imu_pkt.packets:
+                        rv = imu_pkt.packets[-1].rotationVector
+                        try:
+                            # Ensure euler_from_quaternion is available or define simple conversion if needed
+                            # Assuming euler_from_quaternion is defined in file (it was used in existing code)
+                            _, p_rad, _ = euler_from_quaternion(rv.i, rv.j, rv.k, rv.real)
+                            p_curr = math.degrees(p_rad)
+                            has_imu_data = True
+                        except Exception:
+                            pass
+                    
+                    if not has_imu_data:
+                        # Fallback (SW estimation)
+                        # Note: estimate_pitch_from_depth returns Negative for Up, Positive for Down.
+                        p_curr = estimate_pitch_from_depth(depth, camera_height_m=args.camera_height)
+                    
+                    # Apply simple IIR filter
+                    pitch_deg = pitch_deg * 0.7 + p_curr * 0.3
 
                     # Logic Mapping to Tones/Speech
                     
@@ -1602,6 +1540,8 @@ def main():
                     # Calculating 'stB' as it is used by potholes below
                     stB = roi_stats(depth, roi_cache['bottom_x0'], roi_cache['bottom_y0'], 
                                     roi_cache['bottom_x1'], roi_cache['bottom_y1'])
+
+
 
                     # Stairs
                     stairs_label_raw = detect_stairs(depth, roi_cache['stairs_x0'], roi_cache['stairs_x1'],
@@ -1653,73 +1593,117 @@ def main():
                     else:
                         nav_msg_raw = i18n('uncertain') if uncertain else i18n('clear')
                     
+                    
                     # Logic Tuning: If drop-off detected, suppress "Clear ahead" or "Uncertain"
-                    # We only allow directional escapes ("Go left") or "Stop".
                     if dropoff:
                         # If the message suggests it's 'Clear', override it because of the dropoff.
                         # We don't want "Warning. Drop off ahead. Clear ahead."
                         if not blocked and not uncertain:
                              # Was "Clear ahead", now empty so we just hear "Drop off ahead"
                              nav_msg_raw = ""
-                        elif uncertain:
-                             if not blocked:
-                                 # "Drop off ahead. Uncertain path." -> Okay-ish, but maybe redundant.
-                                 pass 
 
                     nav_msg = dir_smoother.update(nav_msg_raw)
 
                     # Compose
                     parts = []
-                    spatial_played = False  # Track if we played a spatial cue this frame
+                    
+                    # 1. Hazards First (Always speak critical warnings)
+                    if dropoff: parts.append(i18n('dropoff'))
+                    if stairs and last_stairs_label: parts.append(i18n(last_stairs_label))
+                    if pothole: parts.append(i18n('pothole'))
                 
-                    if dropoff:
-                        # Dropoff warning message
-                        parts.append(i18n('dropoff'))
-                        
-                    if stairs and last_stairs_label:
-                        parts.append(i18n(last_stairs_label))
-                        
-                    if pothole:
-                        parts.append(i18n('pothole'))
-                
-                    # Obstacle direction with positional audio
+                    # 2. Obstacle Naming (Improved)
                     obstacle_pan = 0.0
                     if blocked:
                         # Determine obstacle pan
-                        if stL.near_mm != 0 and stL.near_mm < obstacle_mm:
+                        if nav_hints['L'] == 'blocked':
                             obstacle_pan = -0.8
-                        elif stR.near_mm != 0 and stR.near_mm < obstacle_mm:
+                        elif nav_hints['R'] == 'blocked':
                             obstacle_pan = 0.8
                         
-                        # Note: No tones, only speech panning below
-                
+                        # Named Obstacle or Generic
+                        if last_hazard_label and (now - last_hazard_ts < 2.0):
+                             # "Chair ahead" or "Dog on left"
+                             parts.append(f"{last_hazard_label}") 
+                    
                     parts.append(nav_msg)
-                    final = " ".join(parts)
+                    final = " ".join(parts).strip()
+                    
+                    # SMART AUDIO FILTER (Sighted Guide Mode)
+                    # Rules:
+                    # 1. Always speak Hazards (Dropoff, Pothole, Stairs)
+                    # 2. Speak if Blocked status changes (Clear -> Blocked or Blocked -> Clear)
+                    # 3. Speak if Navigation instruction changes (Go Left -> Go Right)
+                    # 4. Silence repetitive "Clear ahead"
+                    
+                    should_speak = False
+                    is_hazard = (dropoff or stairs or pothole)
+                    
+                    # Create a state signature to detect meaningful changes
+                    current_nav_state = (blocked, nav_msg, is_hazard)
+                    
+                    if is_hazard:
+                         # Hazards trigger immediate speech (debounced by specific hazard logic if needed)
+                         should_speak = True
+                    elif current_nav_state != last_nav_state:
+                         # State Changed (e.g. Cleared -> Blocked, or Blocked -> Cleared)
+                         should_speak = True
+                    
+                    # Update State
+                    last_nav_state = current_nav_state
 
-                    # Note: pothole warning is included in 'final' message, no separate announcement needed
-                    # Just update cooldown timestamp when pothole is in final message
-                    if pothole and (now - last_pothole_announce_ts) >= args.pothole_cooldown_s:
-                        last_pothole_announce_ts = now
-
-                    if final != last_spoken and (now - last_spoken_ts) >= args.speak_every_s:
-                        # Speak with panning logic
-                        # If blocked, use the calculated obstacle_pan. Otherwise center.
-                        speak_pan = obstacle_pan if blocked else 0.0
-                        audio_controller.speak(final, pan=speak_pan)
-                        
-                        last_spoken = final
-                        last_spoken_ts = now
+                    if final and should_speak:
+                         # Check if we just spoke this exact message very recently (double check)
+                         if final != last_spoken or (now - last_spoken_ts) > 5.0: 
+                             # Allowed to repeat same message after 5s if state "flickered" back
+                             
+                             speak_pan = obstacle_pan if blocked else 0.0
+                             audio_controller.speak(final, pan=speak_pan)
+                             last_spoken = final
+                             last_spoken_ts = now
 
                     # Log every frame processed to debug depth values clearly
                     logger.info(
                         f"FRAME: Light={light} "
-                        f"L={stL.near_mm}mm({stL.valid_ratio:.2f}) "
-                        f"C={stC.near_mm}mm({stC.valid_ratio:.2f}) "
-                        f"R={stR.near_mm}mm({stR.valid_ratio:.2f}) | "
+                        f"L={int(nav_dists['L'])}mm "
+                        f"C={int(nav_dists['C'])}mm "
+                        f"R={int(nav_dists['R'])}mm | "
                         f"Blocked={blocked} Uncertain={uncertain} Dropoff={dropoff} Pothole={pothole} Stairs={stairs} | "
                         f"MSG='{final}' | "
                         f"AudioEn={audio_controller.enabled}"
                     )
+
+                    # Validation Logging
+                    if session_logger and (now - last_log_ts) >= (1.0 / args.record_fps):
+                        last_log_ts = now
+                        
+                        # Prepare metadata
+                        hazards_list = []
+                        if dropoff: hazards_list.append("dropoff")
+                        if stairs: hazards_list.append("stairs")
+                        if pothole: hazards_list.append("pothole")
+                        if hazard_detected: hazards_list.append(last_hazard_label or "object")
+
+                        meta = {
+                            "nav": {
+                                "msg": final,
+                                "dists": {k: float(v) for k, v in nav_dists.items()}, # float for JSON serialization
+                                "blocked": {
+                                    "L": is_blocked_L, "C": is_blocked_C, "R": is_blocked_R
+                                }
+                            },
+                            "hazards": hazards_list,
+                            "detections": {
+                                "yolo": last_hazard_label, 
+                                "ocr": last_spoken if "Sign reads" in last_spoken else None
+                            },
+                             "sys": {
+                                "light": light,
+                                "pitch": round(pitch_deg, 2)
+                            }
+                        }
+                        
+                        session_logger.log(rgb_frame_now, depth, meta)
                 
                     # Console Monitor (kept for compatibility if user uses --monitor)
                     if args.monitor:
@@ -1775,6 +1759,16 @@ def main():
             # Wait before retry
             time.sleep(2.0)
             continue
+        
+        finally:
+            # Ensure camera resources are released before next attempt or exit
+            if camera:
+                try:
+                    camera.stop()
+                except Exception as e:
+                    logger.warning(f"Error stopping camera: {e}")
+            camera = None
+
     
     # === Cleanup ===
     if watchdog:
@@ -1792,6 +1786,9 @@ def main():
 
     logger.info("Navigation stopped.")
     
+    if session_logger:
+        session_logger.close()
+
     audio_controller.shutdown()
     try:
         cv2.destroyAllWindows()

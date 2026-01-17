@@ -1,0 +1,19 @@
+
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.pyc
+
+# Logs
+logs/
+debug_output.txt
+*.log
+
+# Editor
+.vscode/
+.idea/
+
+# Virtual Env
+.venv/

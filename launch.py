@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Universal launch script for WalkingPal.
-Detects OS, finds invalid venv, and launches walkingPal.py with ALL features enabled.
+Detects OS, finds invalid venv, checks setup, and launches walkingPal.py with features enabled.
 """
 
 import sys
@@ -18,8 +18,8 @@ LAUNCH_ARGS = [
     "--ocr_engine", "auto",
     "--ocr_lang", "eng+hin",
     "--ocr_fps", "1.25",
-    # Add any other "all features" flags here
-    # "--spatial_audio", # Optional: uncomment if spatial audio is considered a core "feature" vs preference
+    # Scene Description is always enabled via .env key presence, 
+    # but we can ensure standard thresholds are passed if needed.
 ]
 
 def main():
@@ -27,6 +27,7 @@ def main():
     root_dir = Path(__file__).resolve().parent
     venv_dir = root_dir / ".venv"
     script_path = root_dir / "walkingPal.py"
+    env_path = root_dir / ".env"
 
     # 2. Find Python interpreter in venv
     if platform.system().lower().startswith("win"):
@@ -45,6 +46,23 @@ def main():
         print(f"Error: walkingPal.py not found at: {script_path}")
         sys.exit(1)
 
+    # Check for .env (Important for OpenRouter)
+    if not env_path.exists():
+        print("-" * 50)
+        print("WARNING: .env file not found!")
+        print("OpenRouter Scene Description will NOT work without an API key.")
+        print("Please create .env and add: open_router_api_key=sk-or-...")
+        print("-" * 50)
+        # We don't exit, just warn.
+    else:
+        # Simple check if key is inside
+        try:
+            content = env_path.read_text()
+            if "open_router_api_key" not in content and "OPEN_ROUTER_API_KEY" not in content:
+                 print("WARNING: .env found, but 'open_router_api_key' seems missing.")
+        except Exception:
+            pass
+
     # 4. Construct command
     cmd = [str(venv_python), str(script_path)] + LAUNCH_ARGS
 
@@ -60,6 +78,7 @@ def main():
         cmd.extend(args)
 
     print(f"Launching WalkingPal in '{platform.system()}' mode...")
+    print(f"Environment: {venv_python}")
     print(f"Command: {' '.join(cmd)}")
     print("-" * 50)
     
@@ -71,12 +90,10 @@ def main():
 
     # 5. Execute
     try:
-        # User shell=False to keep signals clean, unless specific reason otherwise
         if save_log:
             log_filename = "debug_output.txt"
             print(f"Logging stdout/stderr to '{log_filename}'...")
             with open(log_filename, "w", encoding="utf-8") as f:
-                # Redirect both stdout and stderr to the file
                 subprocess.check_call(cmd, stdout=f, stderr=subprocess.STDOUT)
                 print(f"Check '{log_filename}' for output.")
         else:

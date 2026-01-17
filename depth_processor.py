@@ -21,9 +21,11 @@ class DepthProcessor:
         self.u_grid, self.v_grid = np.meshgrid(np.arange(width), np.arange(height))
         
         # RANSAC params
-        self.ransac_iters = 50
-        self.ransac_thresh = 50.0 # mm distance to plane
-        self.min_inliers = 2000
+        # RANSAC params
+        self.ransac_iters = 100         # Robustness: Increased from 50 (laptop power is high)
+        self.ransac_thresh = 65.0       # Robustness: Increased from 50mm to handle depth noise better
+        self.min_inliers = 1500         # Robustness: Reduced slightly to allow fitting smaller valid patches
+
         
         # Previous plane for temporal smoothing
         self.prev_plane = None # (a, b, c, d)
@@ -203,12 +205,10 @@ class DepthProcessor:
             inliers = np.abs(dists) < 80
             
             # Obstacles: Significantly ABOVE ground.
-            # "Above" in camera frame (Y-down) means SMALLER Y value?
-            # Normal points UP (negative Y).
-            # Vector from plane to point: P - P_plane.
-            # dist = dot(n, P) + d.
-            # If n points UP, and point is ABOVE plate, dot product is Positive.
-            obstacles = dists > 100 # > 10cm above ground
+            # "Above" in camera frame (Y-down) means dot product is Positive (if normal points UP).
+            # We increase threshold to 12cm to avoid carpet/bumps being obstacles.
+            obstacles = dists > 120 # > 12cm above ground
+
             
             # Dropoffs:
             # This is trickier in point cloud. Dropoff means "missing ground" or "ground too far down".
