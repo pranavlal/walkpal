@@ -1760,6 +1760,8 @@ def main():
                     # 2. Speak if Blocked status changes (Clear -> Blocked or Blocked -> Clear)
                     # 3. Speak if Navigation instruction changes (Go Left -> Go Right)
                     # 4. Silence repetitive "Clear ahead"
+                    # 5. [NEW] Priority Handling: Do not interrupt yourself if the message is identical 
+                    #    except for distance, OR if we are just verifying the same object.
                     
                     should_speak = False
                     is_hazard = (dropoff or stairs or pothole)
@@ -1802,7 +1804,11 @@ def main():
                              # Allowed to repeat same message after 5s if state "flickered" back
                              
                              speak_pan = obstacle_pan if blocked else 0.0
+                             
+                             # FIX: Bundle text into one utterance to prevent self-interruption
+                             # We send 'final' which already contains "Chair... Go left"
                              audio_controller.speak(final, pan=speak_pan)
+                             
                              last_spoken = final
                              last_spoken_ts = now
 
