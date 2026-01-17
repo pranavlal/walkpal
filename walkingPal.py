@@ -1849,18 +1849,23 @@ def main():
                     last_label_state = current_label_state
 
                     if final and should_speak:
-                         # Check if we just spoke this exact message very recently (double check)
-                         if final != last_spoken or (now - last_spoken_ts) > 5.0: 
-                             # Allowed to repeat same message after 5s if state "flickered" back
-                             
-                             speak_pan = obstacle_pan if blocked else 0.0
-                             
-                             # FIX: Bundle text into one utterance to prevent self-interruption
-                             # We send 'final' which already contains "Chair... Go left"
-                             audio_controller.speak(final, pan=speak_pan)
-                             
-                             last_spoken = final
-                             last_spoken_ts = now
+                         # Anti-Flicker: Enforce global minimum interval for non-hazards
+                         # Hazards (Dropoff/Stairs) need fast react (0.5s), others wait (2.0s)
+                         min_interval = 2.0
+                         if is_hazard:
+                             min_interval = 0.5 
+                         
+                         if (now - last_spoken_ts) > min_interval:
+                             # Prevent exact repetition unless 10s passed
+                             if final != last_spoken or (now - last_spoken_ts) > 10.0: 
+                                 speak_pan = obstacle_pan if blocked else 0.0
+                                 audio_controller.speak(final, pan=speak_pan)
+                                 last_spoken = final
+                                 last_spoken_ts = now
+                                 
+                                 # DEBUG VLM
+                                 if "Obstacle" in final and local_describer and not last_hazard_label:
+                                     logger.info(f"VLM Status: Loaded={local_describer.loaded} SmartLabels(TS)={smart_label_ts}")
 
                     # Log every frame processed to debug depth values clearly
                     logger.info(
