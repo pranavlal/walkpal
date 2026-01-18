@@ -1,15 +1,26 @@
-# WalkingPal - Smart Navigation Assistant for the Visually Impaired
+# WalkingPal - Advanced Blind Navigation Assistant
 
-WalkingPal is a Python-based assistive application that uses an **OAK-D (Luxonis)** depth camera to provide real-time navigation feedback, scene description, and object recognition for blind and visually impaired users.
+WalkingPal is an AI-powered perception system for the OAK-D camera, designed to assist blind and visually impaired users navigating their environment. It combines depth-based obstacle avoidance with advanced scene understanding using Online (Gemini/GPT-4) and Local (MiniCPM/Moondream) Vision Language Models.
 
-## 🚀 Key Features
+## Features
+- **Depth-First Navigation**: Real-time detection of obstacles, drop-offs, stairs, and potholes (30fps+).
+- **Hybrid AI Intelligence**:
+  - **Online**: Uses Gemini 2.0 Flash / GPT-4o for detailed scene analysis when online.
+  - **Local High-Accuracy**: Auto-loads **MiniCPM-V 2.0** if a GPU (>6GB VRAM) is detected.
+  - **Local Efficient**: Falls back to **Moondream2** on low-power devices (CPU/Edge).
+  - **Fast Hazard**: Parallel YOLOv6-nano for instant detection of common hazards (people, cars, dogs).
+  - **Smart Power Saving**: Uses **Scene Change Detection** to prevent wasteful AI processing when standing still.
+- **Spatial Audio**: 3D binaural audio feedback to intuitively locate obstacles.
+- **Natural Language**: Speaks natural descriptions like "Stop. Drop off ahead" or "Green light, safe to cross."
+- **Internationalization**: Full support for English and Hindi.
 
-*   **Virtual Cane**: Detects obstacles in Left, Center, and Right zones using stereo depth.
-*   **Hazard Detection**: Identifies critical hazards like **Drop-offs** (stairs down/cliffs), **Stairs** (up), and **Potholes**.
-*   **Hybrid Intelligence (3-Tier)**:
-    1.  **Online Tier**: Uses **Gemini 2.0 Flash** / **Qwen** for detailed analysis (requires internet).
-    2.  **Local Smart Tier**: Falls back to **Moondream2 (Local VLM)** on-device for high-quality object naming without internet (requires only CPU/GPU).
-    3.  **Offline Tier**: Uses on-camera **MobileNet-SSD** for ultra-fast basic object detection (Person, Chair, Bottle).
+## System Requirements
+- **Camera**: Luxonis OAK-D (OAK-D, OAK-D Lite, or OAK-D Pro).
+- **OS**: Linux (Ubuntu 20.04/22.04) or Windows 10/11.
+- **Hardware**:
+  - Minimum: Raspberry Pi 4 / Standard Laptop (Use Moondream2).
+  - Recommended for MiniCPM: Laptop with NVIDIA GPU (6GB+ VRAM) or Apple Silicon (M1/M2/M3).
+
 *   **Smart Audio (Sighted Guide Mode)**: Reduces audio clutter. Bundles object names with navigation instructions (e.g., "Chair ahead, Go Left") and supports **Pre-emptive Interruption** to ensure urgent warnings cut off earlier messages.
 *   **Resilient Fallback**: Automatically switches between Online, Local, and Offline modes based on connectivity and API health.
 *   **OCR (Text Reading)**: reads signs and text in the environment using a hybrid Tesseract/EasyOCR engine.

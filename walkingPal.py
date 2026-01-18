@@ -42,7 +42,7 @@ import depthai as dai
 import yaml
 from depth_processor import DepthProcessor
 from dotenv import load_dotenv
-from scene_describer import SceneDescriber
+from scene_describer import SceneDescriber, SceneChangeMonitor
 from local_describer import LocalDescriber
 from validation_logger import SessionLogger
 
@@ -374,6 +374,7 @@ class AudioController:
         self._sounds: Dict[str, Any] = {}
         self._temp_dir = tempfile.mkdtemp(prefix="walkpal_tts_")
         self._current_channel = None # Track active channel for interruption
+        self._channel_lock = threading.Lock() # Protect channel access
         
         # Async setup
         self._queue = queue.Queue()
@@ -534,8 +535,10 @@ class AudioController:
         sound = self._sounds.get(name)
         if sound:
             # Force stop previous speech for immediate hazard tone
-            if self._current_channel and self._current_channel.get_busy():
-                self._current_channel.stop()
+            # LOCK protected because play_tone is termed from MainThread
+            with self._channel_lock:
+                if self._current_channel and self._current_channel.get_busy():
+                    self._current_channel.stop()
             self._play_sound(sound, pan)
 
     def _speak_sync(self, tts_rate, text, pan):
@@ -588,17 +591,18 @@ class AudioController:
     def _play_sound(self, sound, pan: float):
         try:
             # STOP PREVIOUS AUDIO if playing
-            if self._current_channel and self._current_channel.get_busy():
-                self._current_channel.stop()
-            
-            channel = sound.play()
-            if channel:
-                self._current_channel = channel # Track it
-                pan = max(-1.0, min(1.0, pan))
-                left = 1.0 - max(0.0, pan)
-                right = 1.0 + min(0.0, pan)
-                channel.set_volume(left * self.volume, right * self.volume)
-                logger.debug(f"Setting volume: L={left * self.volume:.2f} R={right * self.volume:.2f} (Master: {self.volume})")
+            with self._channel_lock:
+                if self._current_channel and self._current_channel.get_busy():
+                    self._current_channel.stop()
+                
+                channel = sound.play()
+                if channel:
+                    self._current_channel = channel # Track it
+                    pan = max(-1.0, min(1.0, pan))
+                    left = 1.0 - max(0.0, pan)
+                    right = 1.0 + min(0.0, pan)
+                    channel.set_volume(left * self.volume, right * self.volume)
+                    logger.debug(f"Setting volume: L={left * self.volume:.2f} R={right * self.volume:.2f} (Master: {self.volume})")
         except Exception as e:
             logger.error("Sound Play Error: %s", e)
 
@@ -1410,6 +1414,7 @@ def main():
             smart_label_ts = 0.0
             smart_nav_future = None
             smart_nav_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="SmartNav")
+            smart_nav_monitor = SceneChangeMonitor(change_threshold=15.0)
 
             # Verification State
             verifying_logic = args.self_test
@@ -1429,6 +1434,8 @@ def main():
                     # Reset watchdog at start of each loop iteration
                     if watchdog:
                         watchdog.reset()
+                    
+                    now = time.time()
                     
                     # Fetch all frames
                     frames = camera.get_frames()
@@ -1460,8 +1467,6 @@ def main():
                         min_valid = float(args.min_valid_normal)
                         dropoff_invalid = float(args.dropoff_invalid_ratio)
                         require_center_for_clear = False
-
-                    now = time.time()
 
                     # Connectivity Status Check
                     new_status = conn_monitor.poll_status_change()
@@ -1510,7 +1515,6 @@ def main():
                     # Unified RGB Frame
                     rgb_frame_now = frames.scene if frames.scene is not None else frames.video
 
-                    # --- SMART NAV (ONLINE) ---
                     # --- SMART NAV (ONLINE + LOCAL) ---
                     # Run if Online OR Local VLM enabled
                     if (conn_monitor.is_online() or local_describer) and rgb_frame_now is not None:
@@ -1529,13 +1533,13 @@ def main():
                          
                          # Submit new
                          if smart_nav_future is None and (now - smart_label_ts) > 1.0: # Check every 1s
-                             # Only submit if we are actually moving or blocked (optimization?)
-                             # For now, continuous scouting 
-                             frame_copy = rgb_frame_now.copy()
-                             smart_nav_future = smart_nav_executor.submit(
-                                 perform_smart_analysis,
-                                 frame_bgr=frame_copy
-                             )
+                             # Scene Change Check logic
+                             if smart_nav_monitor.detect_change(rgb_frame_now):
+                                 frame_copy = rgb_frame_now.copy()
+                                 smart_nav_future = smart_nav_executor.submit(
+                                     perform_smart_analysis,
+                                     frame_bgr=frame_copy
+                                 )
 
                     # 1. OCR Logic
                     if args.enable_ocr:

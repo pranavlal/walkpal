@@ -10,6 +10,39 @@ from typing import Optional, Dict
 
 logger = logging.getLogger("walkingpal.scene")
 
+class SceneChangeMonitor:
+    def __init__(self, change_threshold: float = 15.0):
+        self.change_threshold = change_threshold
+        self.last_frame_small = None
+
+    def _preprocess_for_diff(self, frame: np.ndarray) -> np.ndarray:
+        """Resize and grayscale for fast diffing."""
+        small = cv2.resize(frame, (64, 64))
+        gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+        return gray
+
+    def detect_change(self, frame: np.ndarray) -> bool:
+        """Check if scene has changed significantly."""
+        if frame is None:
+            return False
+            
+        cur_small = self._preprocess_for_diff(frame)
+        
+        if self.last_frame_small is None:
+            self.last_frame_small = cur_small
+            return True # First frame always triggers
+            
+        # Calculate Mean Absolute Difference
+        diff = cv2.absdiff(cur_small, self.last_frame_small)
+        mean_diff = np.mean(diff)
+        
+        is_changed = mean_diff > self.change_threshold
+        
+        if is_changed:
+            self.last_frame_small = cur_small
+            
+        return is_changed
+
 class SceneDescriber:
     def __init__(self, api_key: str, 
                  cheap_model: str = "google/gemini-2.0-flash-exp:free", 
@@ -28,10 +61,9 @@ class SceneDescriber:
             "qwen/qwen-2-vl-7b-instruct:free" 
         ]
         
-        self.change_threshold = change_threshold
+        self.monitor = SceneChangeMonitor(change_threshold)
         self.cooldown_s = cooldown_s
         
-        self.last_frame_small = None
         self.last_trigger_time = 0
         self.last_desc_time = 0
         
@@ -39,33 +71,8 @@ class SceneDescriber:
         self.latest_result = None
         self._lock = Lock()
         
-    def _preprocess_for_diff(self, frame: np.ndarray) -> np.ndarray:
-        """Resize and grayscale for fast diffing."""
-        small = cv2.resize(frame, (64, 64))
-        gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-        return gray
-
     def detect_change(self, frame: np.ndarray) -> bool:
-        """Check if scene has changed significantly."""
-        if frame is None:
-            return False
-            
-        cur_small = self._preprocess_for_diff(frame)
-        
-        if self.last_frame_small is None:
-            self.last_frame_small = cur_small
-            return True # First frame always triggers (if allowed by cooldown)
-            
-        # Calculate Mean Absolute Difference
-        diff = cv2.absdiff(cur_small, self.last_frame_small)
-        mean_diff = np.mean(diff)
-        
-        is_changed = mean_diff > self.change_threshold
-        
-        if is_changed:
-            self.last_frame_small = cur_small
-            
-        return is_changed
+        return self.monitor.detect_change(frame)
 
     def process(self, frame: np.ndarray):
         """Main entry point. Call this every frame (or every N frames)."""
