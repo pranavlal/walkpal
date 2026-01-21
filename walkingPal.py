@@ -45,6 +45,8 @@ from dotenv import load_dotenv
 from scene_describer import SceneDescriber, SceneChangeMonitor
 from local_describer import LocalDescriber
 from validation_logger import SessionLogger
+from cameras.webcam import WebcamCamera
+from cameras.oak_d import OakDCamera
 
 def load_config(config_path: str) -> Dict[str, Any]:
     """Load config from yaml file if exists, else return empty."""
@@ -399,8 +401,10 @@ class AudioController:
             else:
                 logger.info("pygame._sdl2.audio not available, cannot list devices.")
         except Exception as e:
-            logger.error("AudioController: Pygame init failed: %s", e)
-            self.enabled = False
+            logger.error("AudioController: Pygame init failed: %s. Switching to FALLBACK TTS (Non-spatial).", e)
+            self._pygame = None
+            # Do NOT disable. We will use direct engine.say() as fallback.
+            self.enabled = True
 
         # Init TTS Engine (offline)
         if self.enabled:
@@ -542,8 +546,22 @@ class AudioController:
             self._play_sound(sound, pan)
 
     def _speak_sync(self, tts_rate, text, pan):
-        if not self._pygame: return
-        
+        # Fallback if pygame is dead
+        if not self._pygame:
+            try:
+                import pyttsx3
+                engine = pyttsx3.init()
+                engine.setProperty("rate", int(tts_rate))
+                engine.setProperty("volume", self.volume)
+                logger.info(f"Speaking (Fallback): {text}")
+                engine.say(text)
+                engine.runAndWait()
+                engine.stop()
+                del engine
+            except Exception as e:
+                logger.error(f"Fallback TTS error: {e}")
+            return
+
         fname = os.path.join(self._temp_dir, f"{uuid.uuid4().hex}.wav")
         engine = None
         try:
@@ -1122,8 +1140,10 @@ def main():
     known_args, _ = pre_parser.parse_known_args()
     
     file_defaults = {}
+    full_config = {}
     if known_args.config and os.path.exists(known_args.config):
         cfg = load_config(known_args.config)
+        full_config = cfg
         # Flatten and map to args
         flat = flatten_config(cfg)
         # Mapping renames if necessary.
@@ -1207,6 +1227,7 @@ def main():
     ap.add_argument("--tts_off", action="store_true")
     ap.add_argument("--tts_rate", type=int, default=175)
     ap.add_argument("--debug", action="store_true")
+    ap.add_argument("--headless", action="store_true", help="Run without GUI window (for SSH/Headless).")
     
     # Spatial audio
     ap.add_argument("--spatial_audio", action="store_true",
@@ -1236,6 +1257,7 @@ def main():
     ap.add_argument("--record", action="store_true", help="Enable session recording for validation.")
     ap.add_argument("--record_fps", type=float, default=2.0, help="Frames per second to log.")
     ap.add_argument("--record_depth", action="store_true", help="Save depth frames to disk (high storage usage).")
+    ap.add_argument("--force_webcam", action="store_true", help="Skip OAK-D check and use webcam immediately.")
 
     args = ap.parse_args()
 
@@ -1347,16 +1369,53 @@ def main():
         try:
             logger.info("Connecting to OAK-D device (attempt %d/%d)...", retry_count + 1, args.max_retries)
             
-            camera = OakDCamera(
-                enable_yolo=args.enable_yolo,
-                enable_potholes=args.enable_potholes,
-                enable_ocr=args.enable_ocr
-            )
+            # Prepare detection config (support legacy enable_yolo)
+            # Prepare detection config (priority: new config > legacy args)
+            det_cfg = full_config.get('detection', {})
             
-            if not camera.start():
-                raise RuntimeError("Failed to start OAK-D pipeline.")
+            # Backward compat: if not defined in config but enable_yolo legacy arg is True
+            # This handles case where user only uses CLI flags like --enable_yolo
+            if not det_cfg and args.enable_yolo:
+                 det_cfg = {'model': 'mobilenet', 'fps': args.yolo_fps}
+
+            # === CAMERA SELECTION STRATEGY ===
+            camera = None
+            use_webcam = args.force_webcam
             
-            label_map = camera.label_map
+            # 1. Try OAK-D unless forced webcam
+            if not use_webcam:
+                try:
+                    logger.info("Initializing OAK-D...")
+                    camera = OakDCamera(
+                        detection_config=det_cfg,
+                        enable_potholes=args.enable_potholes,
+                        enable_ocr=args.enable_ocr
+                    )
+                    if not camera.start():
+                        logger.warning("OAK-D failed to start.")
+                        camera = None
+                except Exception as e:
+                    logger.warning(f"OAK-D init error: {e}")
+                    camera = None
+            
+            # 2. Fallback to Webcam
+            if camera is None:
+                logger.info("Falling back to Webcam (RGB Only)...")
+                try:
+                    camera = WebcamCamera()
+                    if not camera.start():
+                         raise RuntimeError("Webcam failed to start.")
+                    logger.info("Webcam started successfully.")
+                except Exception as e:
+                    logger.error(f"Webcam init error: {e}")
+                    time.sleep(2.0)
+                    retry_count += 1
+                    continue
+            
+            # Note: WebcamCamera doesn't have label_map usually, unless we add detection later
+            label_map = getattr(camera, 'label_map', [])
+            
+            # Initialize Scene Describer
             
             # Initialize Scene Describer
             or_key = os.getenv("open_router_api_key") or os.getenv("OPEN_ROUTER_API_KEY")
@@ -1506,7 +1565,11 @@ def main():
 
                         if hazard_present and last_hazard_label and (now - last_hazard_announce_ts) >= args.hazard_cooldown_s:
                             msg = i18n('hazard', last_hazard_label)
-                            if (now - last_spoken_ts) >= args.speak_every_s:
+                            # Fix: Decoupled latency. 
+                            # Previously used args.speak_every_s (1.1s), which meant frequent Depth warnings (0.5s)
+                            # completely starved YOLO messages. 
+                            # Now we allow YOLO to speak if there is just a short gap (0.6s) in audio.
+                            if (now - last_spoken_ts) >= 0.6:
                                 audio_controller.speak(msg)
                                 last_spoken = msg
                                 last_spoken_ts = now
@@ -1533,13 +1596,37 @@ def main():
                          
                          # Submit new
                          if smart_nav_future is None and (now - smart_label_ts) > 1.0: # Check every 1s
-                             # Scene Change Check logic
-                             if smart_nav_monitor.detect_change(rgb_frame_now):
-                                 frame_copy = rgb_frame_now.copy()
-                                 smart_nav_future = smart_nav_executor.submit(
-                                     perform_smart_analysis,
-                                     frame_bgr=frame_copy
-                                 )
+                            # Scene Change Check logic
+                            if smart_nav_monitor.detect_change(rgb_frame_now):
+                                frame_copy = rgb_frame_now.copy()
+                                smart_nav_future = smart_nav_executor.submit(
+                                    perform_smart_analysis,
+                                    frame_bgr=frame_copy
+                                )
+                            else:
+                                 # Optional: Log occasionally to prove it's workings
+                                 # logger.debug("Scene static - skipping VLM")
+                                 pass
+
+                    # Show video
+                    # Show video
+                    if not args.headless:
+                        disp_img = frames.video
+                        if disp_img is None:
+                             disp_img = frames.scene
+                        if disp_img is None:
+                             disp_img = frames.preview
+                        
+                        if disp_img is not None:
+                            cv2.imshow("WalkingPal", disp_img)
+                            key = cv2.waitKey(1)
+                            if key == ord('q'):
+                                _shutdown_requested.set()
+                                break
+                    else:
+                        # Headless mode
+                        if _shutdown_requested.is_set():
+                            break
 
                     # 1. OCR Logic
                     if args.enable_ocr:
@@ -1584,93 +1671,114 @@ def main():
                              audio_controller.speak(desc)
 
                     # Depth frame
+                    # Depth frame
                     depth = frames.depth
                 
+                    # If we have no depth (Webcam mode), skip advanced nav but keep loop alive
                     if depth is None:
-                        if time.time() - last_depth_ts > 5.0:
-                            logger.warning("No depth frames received for 5 seconds - check connection.")
-                            last_depth_ts = time.time()
-                        time.sleep(0.004)
-                        continue
-                    last_depth_ts = time.time()
-                    h, w = depth.shape[:2]
-
-                    # Cache ROI boundaries (computed once, resolution is constant)
-                    if roi_cache is None:
-                        third = w // 3
-                        roi_cache = {
-                            'band_y0': int(h * 0.35),
-                            'band_y1': int(h * 0.72),
-                            'third': third,
-                            'roiL': (0, int(h * 0.35), third, int(h * 0.72)),
-                            'roiC': (third, int(h * 0.35), 2 * third, int(h * 0.72)),
-                            'roiR': (2 * third, int(h * 0.35), w, int(h * 0.72)),
-                            'bottom_y0': int(h * 0.78),
-                            'bottom_y1': int(h * 0.98),
-                            'bottom_x0': int(w * 0.38),
-                            'bottom_x1': int(w * 0.62),
-                            'stairs_x0': int(w * 0.40),
-                            'stairs_x1': int(w * 0.60),
-                            'stairs_y0': int(h * 0.30),
-                            'stairs_y1': int(h * 0.95),
-                        }
-                    
-                    # === NEW ROBUST NAVIGATION LOGIC ===
-                    
-                    nav_result = nav_processor.process_frame(depth)
-                    
-                    # Unwrap results
-                    nav_hints = nav_result['nav']     # {'L': 'free'|'blocked', 'C': ..., 'R': ...}
-                    nav_dists = nav_result['dists']   # {'L': dist_mm, ...}
-                    dropoff_detected_now = nav_result['dropoff']
-                    plane_eq = nav_result['plane']
-                    debug_img = nav_result['debug_img']
-
-                    if nav_result['plane'] is not None:
-                        # Optional: Validate plane normal if needed
-                        pass
-                    
-                    # === STARTUP VERIFICATION FOR BLIND USERS ===
-                    if verifying_logic and not verification_done:
-                        verification_frames += 1
-                        if plane_eq is not None:
-                            verification_planes += 1
+                        # Log warning once every 5s if we EXPECTED depth (i.e. OAK-D mode)
+                        # How do we know? Check camera type or just suppress if it's WebcamCamera
+                        if not isinstance(camera, WebcamCamera):
+                             if time.time() - last_depth_ts > 5.0:
+                                 logger.warning("No depth frames received for 5 seconds - check connection.")
+                                 last_depth_ts = time.time()
                         
-                        # Run for 3 seconds
-                        if (now - verification_start) > 3.0:
-                            success_rate = verification_planes / max(1, verification_frames)
-                            logger.info(f"Verification: {verification_planes}/{verification_frames} frames with valid plane ({success_rate:.1%})")
-                            
-                            if success_rate > 0.5:
-                                audio_controller.speak("Logic check passed. Floor detected.")
-                            else:
-                                audio_controller.speak("Logic check warning. Floor usage unclear. Please tilt camera.")
-                            
-                            verifying_logic = False
-                            verification_done = True
-                            
-                    # Update Pitch (Tilt) estimate
-                    # Consolidated logic: Prefer IMU, fallback to SW.
-                    # Sign convention: Negative = Looking Up, Positive = Looking Down (verified for SW).
-                    p_curr = 0.0
-                    has_imu_data = False
+                        # Just sleep briefly to maintain loop rate if video is also slow
+                        # But usually we rely on video rate.
+                        if frames.video is None:
+                            time.sleep(0.01)
+                        
+                        # Setup dummy nav results for safety
+                        nav_dists = {'L': 9999, 'C': 9999, 'R': 9999}
+                        nav_hints = {'L': 'free', 'C': 'free', 'R': 'free'}
+                        dropoff_detected_now = False
+                        plane_eq = None
+                        p_curr = 0.0 # pitch
+                        
+                        # If webcam, we might want to say "Camera Active" occasionally?
+                        # Skip directly to display logic
                     
-                    imu_pkt = camera.get_imu()
-                    if imu_pkt and imu_pkt.packets:
-                        rv = imu_pkt.packets[-1].rotationVector
-                        try:
-                            # Ensure euler_from_quaternion is available or define simple conversion if needed
-                            # Assuming euler_from_quaternion is defined in file (it was used in existing code)
-                            _, p_rad, _ = euler_from_quaternion(rv.i, rv.j, rv.k, rv.real)
-                            p_curr = math.degrees(p_rad)
-                            has_imu_data = True
-                        except Exception:
+                    else:
+                        last_depth_ts = time.time()
+                        h, w = depth.shape[:2]
+
+                        # Cache ROI boundaries (computed once, resolution is constant)
+                        if roi_cache is None:
+                            third = w // 3
+                            roi_cache = {
+                                'band_y0': int(h * 0.35),
+                                'band_y1': int(h * 0.72),
+                                'third': third,
+                                'roiL': (0, int(h * 0.35), third, int(h * 0.72)),
+                                'roiC': (third, int(h * 0.35), 2 * third, int(h * 0.72)),
+                                'roiR': (2 * third, int(h * 0.35), w, int(h * 0.72)),
+                                'bottom_y0': int(h * 0.78),
+                                'bottom_y1': int(h * 0.98),
+                                'bottom_x0': int(w * 0.38),
+                                'bottom_x1': int(w * 0.62),
+                                'stairs_x0': int(w * 0.40),
+                                'stairs_x1': int(w * 0.60),
+                                'stairs_y0': int(h * 0.30),
+                                'stairs_y1': int(h * 0.95),
+                            }
+                        
+                        # === NEW ROBUST NAVIGATION LOGIC ===
+                        
+                        nav_result = nav_processor.process_frame(depth)
+                        
+                        # Unwrap results
+                        nav_hints = nav_result['nav']     # {'L': 'free'|'blocked', 'C': ..., 'R': ...}
+                        nav_dists = nav_result['dists']   # {'L': dist_mm, ...}
+                        dropoff_detected_now = nav_result['dropoff']
+                        plane_eq = nav_result['plane']
+                        debug_img = nav_result['debug_img']
+    
+                        if nav_result['plane'] is not None:
+                            # Optional: Validate plane normal if needed
                             pass
-                    
-                    if not has_imu_data:
-                        # Fallback (SW estimation)
-                        # Note: estimate_pitch_from_depth returns Negative for Up, Positive for Down.
-                        p_curr = estimate_pitch_from_depth(depth, camera_height_m=args.camera_height)
+                        
+                        # === STARTUP VERIFICATION FOR BLIND USERS ===
+                        if verifying_logic and not verification_done:
+                            verification_frames += 1
+                            if plane_eq is not None:
+                                verification_planes += 1
+                            
+                            # Run for 3 seconds
+                            if (now - verification_start) > 3.0:
+                                success_rate = verification_planes / max(1, verification_frames)
+                                logger.info(f"Verification: {verification_planes}/{verification_frames} frames with valid plane ({success_rate:.1%})")
+                                
+                                if success_rate > 0.5:
+                                    audio_controller.speak("Logic check passed. Floor detected.")
+                                else:
+                                    audio_controller.speak("Logic check warning. Floor usage unclear. Please tilt camera.")
+                                
+                                verifying_logic = False
+                                verification_done = True
+                                
+                        # Update Pitch (Tilt) estimate
+                        # Consolidated logic: Prefer IMU, fallback to SW.
+                        # Sign convention: Negative = Looking Up, Positive = Looking Down (verified for SW).
+                        p_curr = 0.0
+                        has_imu_data = False
+                        
+                        imu_pkt = camera.get_imu()
+                        if imu_pkt and imu_pkt.packets:
+                            rv = imu_pkt.packets[-1].rotationVector
+                            try:
+                                # Ensure euler_from_quaternion is available or define simple conversion if needed
+                                # Assuming euler_from_quaternion is defined in file (it was used in existing code)
+                                _, p_rad, _ = euler_from_quaternion(rv.i, rv.j, rv.k, rv.real)
+                                p_curr = math.degrees(p_rad)
+                                has_imu_data = True
+                            except Exception:
+                                pass
+                        
+                        if not has_imu_data:
+                            # Fallback (SW estimation)
+                            # Note: estimate_pitch_from_depth returns Negative for Up, Positive for Down.
+                            p_curr = estimate_pitch_from_depth(depth, camera_height_m=args.camera_height)
+
                     
                     # Apply simple IIR filter
                     pitch_deg = pitch_deg * 0.7 + p_curr * 0.3
@@ -1703,14 +1811,17 @@ def main():
                     uncertain = uncertain_db.update(uncertain_now)
 
                     # Calculating 'stB' as it is used by potholes below
-                    stB = roi_stats(depth, roi_cache['bottom_x0'], roi_cache['bottom_y0'], 
-                                    roi_cache['bottom_x1'], roi_cache['bottom_y1'])
+                    if depth is not None and roi_cache is not None:
+                        stB = roi_stats(depth, roi_cache['bottom_x0'], roi_cache['bottom_y0'], 
+                                        roi_cache['bottom_x1'], roi_cache['bottom_y1'])
+                    else:
+                        stB = None
 
 
 
                     # Stairs
                     # GUARD: also pitch sensitive
-                    if pitch_ok:
+                    if pitch_ok and depth is not None and roi_cache is not None:
                         stairs_label_raw = detect_stairs(depth, roi_cache['stairs_x0'], roi_cache['stairs_x1'],
                                                           roi_cache['stairs_y0'], roi_cache['stairs_y1'])
                     else:
@@ -1727,7 +1838,8 @@ def main():
 
                     # Potholes
                     pothole = False
-                    if args.enable_potholes and not dropoff:
+                    # GUARD: Potholes need good ground plane visibility (pitch/light)
+                    if args.enable_potholes and not dropoff and pitch_ok and light_ok:
                         if stB.valid_ratio >= args.pothole_roi_valid:
                             score = pothole_score(depth, roi_cache['bottom_x0'], roi_cache['bottom_y0'],
                                                   roi_cache['bottom_x1'], roi_cache['bottom_y1'])
@@ -1792,9 +1904,9 @@ def main():
                             obstacle_pan = 0.8
                         
                         # Hybrid Labeling Logic
-                        # 1. Check Smart Label (Online) - Valid for 3.0s
+                        # 1. Check Smart Label (Online OR Local) - Valid for 3.0s
                         final_label = None
-                        if conn_monitor.is_online() and smart_label and (now - smart_label_ts < 3.0):
+                        if smart_label and (now - smart_label_ts < 3.0):
                             final_label = smart_label
                         
                         # 2. Fallback to Local YOLO (Offline/Faster) - Valid for 2.0s
@@ -1802,10 +1914,16 @@ def main():
                             final_label = last_hazard_label
 
                         if final_label:
-                             # "Chair ahead" or "Dog on left"
-                             parts.append(f"{final_label}") 
+                             # "Chair ahead" instead of "Chair Obstacle ahead"
+                             if "Obstacle" in nav_msg:
+                                  nav_msg = nav_msg.replace("Obstacle", final_label, 1)
+                                  parts.append(nav_msg)
+                             else:
+                                  parts.append(f"{final_label}") 
+                                  parts.append(nav_msg)
+                        else:
+                             parts.append(nav_msg)
                     
-                    parts.append(nav_msg)
                     final = " ".join(parts).strip()
                     
                     # SMART AUDIO FILTER (Sighted Guide Mode)
@@ -1918,7 +2036,7 @@ def main():
                     if args.monitor:
                          pass
 
-                    if args.debug:
+                    if args.debug and not args.headless:
                         d = np.clip(depth, 0, 5000)
                         d8 = (d / 5000.0 * 255.0).astype(np.uint8)
                         vis = cv2.applyColorMap(d8, cv2.COLORMAP_JET)
@@ -1931,9 +2049,10 @@ def main():
                         cv2.putText(vis, header, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 0, 0), 3)
                         cv2.putText(vis, header, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (255, 255, 255), 1)
                         try:
-                            cv2.imshow("OAK-D Blind Nav (YOLO+HiOCR) - press q", vis)
-                            if cv2.waitKey(1) & 0xFF == ord("q"):
-                                break
+                            if not args.headless:
+                                cv2.imshow("OAK-D Blind Nav (YOLO+HiOCR) - press q", vis)
+                                if cv2.waitKey(1) & 0xFF == ord("q"):
+                                    break
                         except Exception:
                             # Headless or X11 forwarding failed
                             pass
@@ -1944,16 +2063,29 @@ def main():
         
         except KeyboardInterrupt:
             # Clean shutdown requested via signal
-            logger.info("Keyboard interrupt received.")
+            logger.info("Shutdown requested.")
             break
-            
+
         except (RuntimeError, Exception) as dev_err:
             # Device disconnection or pipeline error
+            import traceback
+            logger.error(f"CRITICAL LOOP ERROR: {dev_err}")
+            logger.error(traceback.format_exc())
+
             if _shutdown_requested.is_set():
                 break
             
             retry_count += 1
             logger.warning("Device error (%s). Retry %d/%d...", dev_err, retry_count, args.max_retries)
+            
+            # CRITICAL: Release device immediately to allow reconnection
+            if camera:
+                try:
+                    camera.stop()
+                except Exception as e:
+                    logger.error(f"Error stopping camera: {e}")
+                camera = None
+
             audio_controller.speak(i18n('device_disconnect'))
             
             # Stop watchdog during reconnection

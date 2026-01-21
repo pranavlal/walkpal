@@ -203,7 +203,9 @@ class SceneDescriber:
                         result = resp.json()
                         if 'choices' in result and len(result['choices']) > 0:
                             content = result['choices'][0]['message']['content']
-                            logger.debug(f"Model {model} response: {content}")
+                            # Privacy: Truncate log to avoid leaking sensitive text
+                            log_content = (content[:50] + '...') if len(content) > 50 else content
+                            logger.debug(f"Model {model} response: {log_content}")
                             return content
                     
                     # Check for non-retryable

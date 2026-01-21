@@ -66,7 +66,8 @@ class LocalDescriber:
             # Revision pinning for security/stability
             revision = "main"
             if self.model_type == "moondream":
-                 revision = "2024-08-26"
+                 # Use main branch for latest compatibility with transformers >= 4.40
+                 revision = "main"
             elif self.model_type == "minicpm":
                  # Commit hash for MiniCPM-V 2.0 (Stable as of late 2024)
                  # or just use "main" if we trust it. 

@@ -58,11 +58,19 @@ def ensure_python_version() -> None:
 
 
 def create_venv(force: bool = False) -> None:
+    py_bin = venv_python_path()
+    
+    # Check if venv exists but is broken (dir exists, binary missing)
+    if VENV_DIR.exists() and not py_bin.exists():
+        print(f"Venv directory exists but python binary missing. Recreating...")
+        force = True
+
     if force and VENV_DIR.exists():
         print(f"Removing existing venv: {VENV_DIR}")
         shutil.rmtree(VENV_DIR)
 
     if not VENV_DIR.exists():
+        print(f"Creating venv at: {VENV_DIR}")
         run([sys.executable, "-m", "venv", str(VENV_DIR)])
     else:
         print(f"Venv already exists: {VENV_DIR}")
@@ -181,34 +189,14 @@ def main():
     print_next_steps(with_easyocr=args.with_easyocr)
 
 def ensure_model_blob() -> None:
-    blob_path = ROOT / "mobilenet-ssd.blob"
-    if blob_path.exists():
-        print(f"\n[OK] Model blob found: {blob_path}")
-        return
-
-    print("\n>>> Downloading MobileNet-SSD blob (approx 14MB)...")
+    print("\n>>> Downloading Models (YOLOv8, MiDaS, MobileNet)...")
     py = venv_python_path()
     
-    # Run a snippet inside the venv to use the just-installed blobconverter
-    script = r"""
-import blobconverter
-import shutil
-import sys
-from pathlib import Path
-
-try:
-    path = blobconverter.from_zoo(name="mobilenet-ssd", zoo_type="intel", shaves=6)
-    print(f"Downloaded to {path}")
-    shutil.move(path, "mobilenet-ssd.blob")
-    print("Success.")
-except Exception as e:
-    print(f"Error: {e}")
-    sys.exit(1)
-"""
+    # Run the dedicated download script
     try:
-        run([str(py), "-c", script], cwd=ROOT)
+        run([str(py), "download_models.py"], cwd=ROOT)
     except Exception:
-        print("[WARN] Failed to download blob automatically. run 'pip install blobconverter' and download manually.")
+        print("[WARN] Failed to run download_models.py. Models might be missing.")
 
 
 
@@ -227,6 +215,29 @@ def system_checks() -> None:
             print("       Fedora/RHEL:   sudo dnf install tesseract")
         elif platform.system().lower().startswith("win"):
             print("       Install from: https://github.com/UB-Mannheim/tesseract/wiki")
+
+    # Check for eSpeak (TTS requirement for Linux)
+    if platform.system().lower().startswith("linux"):
+        espeak = shutil.which("espeak") or shutil.which("espeak-ng")
+        if espeak:
+             print(f"[OK] eSpeak found: {espeak}")
+        else:
+             print("[WARN] 'espeak' or 'espeak-ng' not found. TTS may not work.")
+             print("       Debian/Ubuntu: sudo apt install espeak-ng")
+             print("       Arch Linux:    sudo pacman -S espeak-ng")
+             print("       Fedora:        sudo dnf install espeak-ng")
+
+    # Check for Pygame Mixer (SDL Dependencies)
+    py = venv_python_path()
+    try:
+        run([str(py), "-c", "import pygame.mixer; pygame.mixer.init()"], cwd=ROOT)
+        print(f"[OK] Pygame mixer init success.")
+    except Exception:
+        print("[WARN] Pygame mixer failed to init. Missing system dependencies?")
+        if platform.system().lower().startswith("linux"):
+             print("       Debian/Ubuntu/Raspberry Pi: sudo apt install libsdl2-mixer-2.0-0")
+             print("       Arch:                       sudo pacman -S sdl2_mixer")
+             print("       Fedora:                     sudo dnf install SDL2_mixer")
 
     # Check for Linux UDEV rules (OAK-D requirement)
     if platform.system().lower().startswith("linux"):
