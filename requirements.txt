@@ -6,6 +6,9 @@ google-genai>=0.2.0
 anthropic>=0.3.0
 openai>=1.0.0
 
+# GUI & Accessibility (Optional Debugging Interface)
+PySide6>=6.6.0
+
 # Text-to-Speech (Navigation feedback)
 pyttsx3>=2.90
 

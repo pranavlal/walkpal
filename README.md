@@ -11,7 +11,9 @@ WalkingPal is an AI-powered perception system for the OAK-D camera, designed to 
   - **Fast Hazard**: Parallel YOLOv6-nano for instant detection of common hazards (people, cars, dogs).
   - **Smart Power Saving**: Uses **Scene Change Detection** to prevent wasteful AI processing when standing still.
 - **Spatial Audio**: 3D binaural audio feedback to intuitively locate obstacles.
-- **Natural Language**: Speaks natural descriptions like "Stop. Drop off ahead" or "Green light, safe to cross."
+- **Accessible Debugging GUI**: Optional, cross-platform GUI with **WCAG 2.2 compliant** accessibility features, high-contrast modes, and live screen-reader descriptions.
+- **Mission-Critical Reliability**: Refactored to adhere to **NASA JPL "Power of Ten"** safety rules for deterministic execution and fault tolerance.
+- **OCR (Text Reading)**: Advanced sign and text recognition using a hybrid Tesseract/EasyOCR engine.
 - **Internationalization**: Full support for English and Hindi.
 
 ## System Requirements
@@ -23,21 +25,26 @@ WalkingPal is an AI-powered perception system for the OAK-D camera, designed to 
 
 *   **Smart Audio (Sighted Guide Mode)**: Reduces audio clutter. Bundles object names with navigation instructions (e.g., "Chair ahead, Go Left") and supports **Pre-emptive Interruption** to ensure urgent warnings cut off earlier messages.
 *   **Resilient Fallback**: Automatically switches between Online, Local, and Offline modes based on connectivity and API health.
-*   **OCR (Text Reading)**: reads signs and text in the environment using a hybrid Tesseract/EasyOCR engine.
+*   **OCR (Text Reading)**: Reads signs and text in the environment using a hybrid Tesseract/EasyOCR engine. Supports `--enable_ocr`.
 *   **Validation Logging**: Records synchronized video and metadata for offline validation and debugging.
+*   **One-Click Installers**: Native setup scripts for Windows and Linux to automate complex environment configuration.
 
 ---
 
-## 📦 Installation
+### Windows (One-Click)
+Right-click `WalkingPal_Setup.ps1` and select **Run with PowerShell**. This automates Python detection, virtual environment creation, and Desktop Shortcut generation.
 
-### Linux / Windows
+### Linux (One-Click)
+```bash
+chmod +x walkingpal_setup.sh
+./walkingpal_setup.sh
+```
+Installs system dependencies (`libgl1`, `tesseract`), sets up **UDEV hardware rules** for OAK-D, and creates a Desktop Entry.
+
+### Legacy/Manual (macOS/Terminal)
 ```bash
 python install.py  # Universal installer
-```
-
-### macOS
-```bash
-./install_mac.sh   # Installs brew dependencies automatically
+./install_mac.sh   # macOS specific
 ```
 
 ### 1. Hardware Abstraction (`cameras/oak_d.py`)
@@ -101,6 +108,12 @@ When you first run with `--enable_local_vlm`, the application will download the 
 python3 launch.py
 ```
 *Note: `launch.py` automatically enables Recording, Logging, and Local VLM.*
+
+**Accessible Debugging GUI**:
+```bash
+python3 walkingPal.py --gui
+```
+*Launches the optional WCAG 2.2 compliant visual console for sighted assistants or developers.*
 
 ## Running over SSH (Headless)
 If you are running remotely (e.g., sticking the Pi in a backpack and SSHing in), use the `--headless` flag to prevent the app from trying to open a window:

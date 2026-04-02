@@ -14,6 +14,7 @@ import sys
 import os
 import math
 import yaml
+import multiprocessing as mp
 import numpy as np
 import cv2
 from logging.handlers import RotatingFileHandler
@@ -81,6 +82,7 @@ class WalkPalApp:
         self.audio, self.scene_desc, self.camera = None, None, None
         self.nav_proc, self.logger_ver, self.conn_mon = None, None, None
         self.watchdog, self.ocr_pool, self.nav_pool = None, None, None
+        self.gui_proc, self.gui_queue = None, None
         
         # Performance/State Tracking (Rule 03: Pre-allocation)
         self.last_ts = {k: 0.0 for k in ['ocr', 'ocr_req', 'speak', 'h_warn', 'light', 'vlm']}
@@ -127,6 +129,13 @@ class WalkPalApp:
         
         if self.args.watchdog_s > 0: self.watchdog = Watchdog(timeout_s=self.args.watchdog_s)
         if self.args.record: self.logger_ver = SessionLogger(record_depth=self.args.record_depth)
+        
+        if self.args.gui:
+            from gui import run_gui
+            self.gui_queue = mp.Queue(maxsize=2) # Keep it lean
+            self.gui_proc = mp.Process(target=run_gui, args=(self.gui_queue,), name="WalkPalGUI")
+            self.gui_proc.start()
+            logger.info("GUI Process started.")
         
         self._init_ai()
         self._init_dbs()
@@ -205,6 +214,15 @@ class WalkPalApp:
         # 4. Side Effects (Rule 08)
         pan = -0.8 if nav['is_blocked_L'] else (0.8 if nav['is_blocked_R'] else 0.0)
         self.feedback(nav, h_label, pan, now)
+        if self.gui_queue and not self.gui_queue.full():
+             packet = {
+                 'frame': rgb.copy() if rgb is not None else None,
+                 'nav': nav['msg'],
+                 'scene': self.state.get('spoken', 'Analyzing...'),
+                 'hazards': list(hazards)
+             }
+             assert 'nav' in packet and 'scene' in packet
+             self.gui_queue.put_nowait(packet)
         if self.args.debug: self.debug_gui(frames, nav)
 
     def process_light(self, frames, now):
@@ -366,6 +384,11 @@ class WalkPalApp:
         if self.conn_mon: self.conn_mon.stop()
         if self.scene_desc: self.scene_desc.shutdown()
         if self.logger_ver: self.logger_ver.close()
+        if self.gui_proc:
+            if self.gui_proc.is_alive():
+                self.gui_proc.terminate()
+            self.gui_proc.join(timeout=1.0)
+            assert not self.gui_proc.is_alive()
         if self.audio: self.audio.shutdown()
         cv2.destroyAllWindows()
         logger.info("Cleanup complete.")
@@ -581,6 +604,7 @@ def main():
     ap.add_argument("--record", action="store_true")
     ap.add_argument("--record_depth", action="store_true")
     ap.add_argument("--force_webcam", action="store_true")
+    ap.add_argument("--gui", action="store_true")
     ap.add_argument("--debug", action="store_true")
     ap.add_argument("--headless", action="store_true")
     ap.add_argument("--self_test", action="store_true")
