@@ -11,7 +11,10 @@ if [ -x "$(command -v apt-get)" ]; then
     sudo apt-get install -y python3-venv python3-pip libgl1-mesa-glx tesseract-ocr usbutils || exit 1
 elif [ -x "$(command -v dnf)" ]; then
     echo "Common dependencies (Fedora detected)..."
-    sudo dnf install -y python3-devel mesa-libGL tesseract usbutils
+    sudo dnf install -y python3-devel mesa-libGL tesseract usbutils || exit 1
+elif [ -x "$(command -v pacman)" ]; then
+    echo "Common dependencies (Arch Linux detected)..."
+    sudo pacman -S --needed --noconfirm python python-pip mesa tesseract usbutils || exit 1
 fi
 
 # 2. USB Permissions (Rule 03: NASA Mission-Critical Hardware)

@@ -39,7 +39,7 @@ Right-click `WalkingPal_Setup.ps1` and select **Run with PowerShell**. This auto
 chmod +x walkingpal_setup.sh
 ./walkingpal_setup.sh
 ```
-Installs system dependencies (`libgl1`, `tesseract`), sets up **UDEV hardware rules** for OAK-D, and creates a Desktop Entry.
+Installs system dependencies (`libgl1`, `tesseract`), sets up **UDEV hardware rules** for OAK-D, and creates a Desktop Entry. Supported on **Ubuntu, Fedora, and Arch Linux**.
 
 ### Legacy/Manual (macOS/Terminal)
 ```bash
