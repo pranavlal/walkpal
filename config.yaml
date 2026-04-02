@@ -33,16 +33,40 @@ smoothing:
   pothole_cooldown_s: 2.0
 
 # Features toggle
+# Features toggle
 features:
-  enable_yolo: false
+  # enable_yolo is deprecated. Use detection.model instead.
+  # enable_yolo: false 
   enable_ocr: false
   enable_potholes: false
   
-# YOLO Settings
-yolo:
-  fps: 4.0
-  confindence: 0.50
-  hazards: "dog,cat,cow,person"
+# Detection Settings (MobileNet / YOLO / RT-DETR / RF-DETR)
+# Detection Settings (MobileNet / YOLO / RT-DETR / RF-DETR)
+detection:
+  model: "yolov8"         # Options: none, mobilenet, yolo, yolov8, rtdetr, rf-detr
+  fps: 15.0               # YOLOv8n is fast enough for 15fps
+  confidence: 0.50
+  input_size: [640, 352]  # [width, height] - Required for YOLOv8
+  
+  # Model specific blobs
+  blobs:
+    mobilenet: "mobilenet-ssd.blob"
+    yolo: "yolo-v4-tiny.blob"   # Legacy/Tiny
+    yolov8: "yolov8n.blob"      # SOTA Realtime
+    rtdetr: "rtdetr.blob"       
+    rf-detr: "rf-detr.blob"     
+    
+  # Class labels (overrides internal defaults if list provided)
+  labels: [] 
+  
+  # Filter specific classes (empty = all)
+  classes: ["dog", "cat", "cow", "person", "car", "motorcycle", "bus", "truck"] # Expanded for YOLOv8 capabilities
+
+# Legacy YOLO Settings (Deprecated, mapped to 'detection' if used)
+# yolo:
+#   fps: 4.0
+#   confindence: 0.50
+#   hazards: "dog,cat,cow,person"
 
 # OCR Settings
 ocr:
@@ -56,6 +80,10 @@ ocr:
   cooldown_s: 7.0
   auto_min_quality: 0.55
   easyocr_gpu: false
+  
+# OpenAI Settings
+openai:
+  model: "gpt-4o-mini"
 
 # Audio / Feedback
 audio:

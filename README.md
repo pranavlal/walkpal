@@ -16,7 +16,7 @@ WalkingPal is an AI-powered perception system for the OAK-D camera, designed to 
 
 ## System Requirements
 - **Camera**: Luxonis OAK-D (OAK-D, OAK-D Lite, or OAK-D Pro).
-- **OS**: Linux (Ubuntu 20.04/22.04) or Windows 10/11.
+- **OS**: Linux (Ubuntu 20.04/22.04), Windows 10/11, or macOS (Intel/Apple Silicon).
 - **Hardware**:
   - Minimum: Raspberry Pi 4 / Standard Laptop (Use Moondream2).
   - Recommended for MiniCPM: Laptop with NVIDIA GPU (6GB+ VRAM) or Apple Silicon (M1/M2/M3).
@@ -28,7 +28,17 @@ WalkingPal is an AI-powered perception system for the OAK-D camera, designed to 
 
 ---
 
-## 🛠️ Technical Architecture
+## 📦 Installation
+
+### Linux / Windows
+```bash
+python install.py  # Universal installer
+```
+
+### macOS
+```bash
+./install_mac.sh   # Installs brew dependencies automatically
+```
 
 ### 1. Hardware Abstraction (`cameras/oak_d.py`)
 The application interacts with the OAK-D camera via the `depthai` library (pinned to version `<3.0` for stability).
@@ -91,6 +101,19 @@ When you first run with `--enable_local_vlm`, the application will download the 
 python3 launch.py
 ```
 *Note: `launch.py` automatically enables Recording, Logging, and Local VLM.*
+
+## Running over SSH (Headless)
+If you are running remotely (e.g., sticking the Pi in a backpack and SSHing in), use the `--headless` flag to prevent the app from trying to open a window:
+
+```bash
+# 1. Install (First run only)
+python3 install.py
+
+# 2. Launch
+python3 launch.py --headless
+```
+
+The app will still generate audio (ensure your speakers are connected to the Pi/Laptop) but will not crash due to missing display.
 
 **Manual Launch**:
 ```bash

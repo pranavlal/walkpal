@@ -96,10 +96,13 @@ class LocalDescriber:
             self.loading_started = False
 
     def analyze_image(self, frame_bgr: np.ndarray, prompt: str = "Describe the single main object in front of the camera in 2-4 words.") -> str:
+        assert frame_bgr is not None and isinstance(frame_bgr, np.ndarray), "Invalid frame"
+        assert prompt and len(prompt) > 0, "Prompt cannot be empty"
         if not self.loaded:
             self.ensure_loaded()
             return None
-
+        
+        assert self.model is not None, "Local Model missing despite loaded state"
         try:
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
             image = Image.fromarray(frame_rgb)
@@ -130,4 +133,23 @@ class LocalDescriber:
             return None
         except Exception as e:
             logger.error(f"Local VLM inference failed: {e}")
+            if self.device == "cuda":
+                torch.cuda.empty_cache()
             return None
+
+    def _is_uncertain(self, text: str) -> bool:
+        """Heuristic to check if response implies uncertainty."""
+        assert isinstance(text, str), "Text must be string"
+        if not text: return True
+        lower = text.lower()
+        unc_keywords = ["unsure", "unclear", "cannot determine", "too blurry", "difficult to see", "uncertain"]
+        assert len(unc_keywords) > 0, "Keywords missing"
+        
+        for k in unc_keywords:
+            if k in lower:
+                return True
+        return len(text) < 10
+
+    def __del__(self):
+        if self.device == "cuda":
+            torch.cuda.empty_cache()
