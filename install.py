@@ -64,7 +64,7 @@ if {probe}:
         print("Devices:", devs)
         if not devs: print("WARNING: No OAK devices detected.")
     except Exception as e: print("Device probe failed:", e)
-""".format(probe="True" if probe_device else "False")
+""".replace("{probe}", "True" if probe_device else "False")
     run([str(py), "-c", checks])
 
 def main():

@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QLabel, QPushButton, QScrollArea, QFrame)
 from PySide6.QtGui import (QImage, QPixmap, QShortcut, QKeySequence, QPalette, QColor, QFont)
 from PySide6.QtCore import (Qt, QTimer, Slot, Signal, QObject, QThread, QSize)
-from PySide6.QtAccessibility import QAccessible
+from PySide6.QtGui import QAccessible
 
 logger = logging.getLogger("walkingpal.gui")
 

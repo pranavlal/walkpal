@@ -204,8 +204,8 @@ class WalkPalApp:
         
         # 2. AI Tasks
         rgb = frames.scene if frames.scene is not None else frames.video
-        assert rgb is not None, "No RGB frame for AI"
-        self.process_ai(rgb, now)
+        if rgb is not None:
+            self.process_ai(rgb, now)
         
         # 3. Navigation Logic
         nav = self.process_nav(frames.depth, now, light)
@@ -287,8 +287,8 @@ class WalkPalApp:
 
     def process_nav(self, depth, now, light):
         if depth is None: 
-            return {'msg': i18n('uncertain'), 'is_blocked_L': False, 'is_blocked_R': False, 
-                    'dropoff': False, 'stairs': False, 'pothole': False}
+            return {'msg': i18n('uncertain'), 'is_blocked_L': False, 'is_blocked_C': False, 'is_blocked_R': False, 
+                    'dropoff': False, 'stairs': False, 'pothole': False, 'uncertain': True}
         assert depth.ndim == 2
         
         self.ensure_roi(depth)
